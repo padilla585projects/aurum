@@ -5,9 +5,9 @@ import {
 } from 'recharts';
 import {
   initNexus, getMemory, nexusChat, nexusResearch, nexusPrices,
-  PROVIDER_META, PROFILES,
+  PROVIDER_META, PROFILES, EMPTY_PROFILE,
 } from './nexus/index';
-import type { AgentKey, ChatMessage, DisplayMessage, Position, RouteResult } from './nexus/index';
+import type { AgentKey, ChatMessage, DisplayMessage, Position, RouteResult, UserProfile } from './nexus/index';
 
 /* ══════════════════════════════════════════════════════════════
    BOOTSTRAP
@@ -64,6 +64,7 @@ const NAV = [
   { id:'portfolio', icon:'📁', label:'Cartera'   },
   { id:'research',  icon:'🔬', label:'Research'  },
   { id:'simulator', icon:'🧮', label:'Simulador' },
+  { id:'settings',  icon:'⚙️', label:'Ajustes'   },
 ];
 
 const AGENTS: Record<AgentKey, { name:string; icon:string; color:string; desc:string }> = {
@@ -183,7 +184,7 @@ function MemoryPanel({ onClose }:{ onClose:()=>void }) {
 /* ══════════════════════════════════════════════════════════════
    CHAT TAB
 ══════════════════════════════════════════════════════════════ */
-function ChatTab({ profile, portfolio }:{ profile:string; portfolio:Position[] }) {
+function ChatTab({ profile, portfolio, userProfile }:{ profile:string; portfolio:Position[]; userProfile:UserProfile }) {
   const [agentKey, setAgentKey] = useState<AgentKey>('aurum');
   const [histories, setHistories] = useState<Record<AgentKey, DisplayMessage[]>>({
     aurum:  [{ role:'assistant', content:`Bienvenido. Soy **AURUM**, tu asesor de inversión personal con IA.\n\nEstoy conectado a Claude, GPT-4o y DeepSeek — cada agente usa el modelo que mejor se adapta a su tarea.\n\n${portfolio.length?`Conozco tu cartera (${portfolio.length} posiciones).`:'Puedo ayudarte a construir tu cartera.'}\n\n## ¿Cómo empezamos?\n- Cuéntame tu situación: capital disponible, horizonte y objetivo\n- O lanza cualquier pregunta directamente 👇`, provider:'anthropic' }],
@@ -243,6 +244,7 @@ function ChatTab({ profile, portfolio }:{ profile:string; portfolio:Position[] }
         portfolio,
         () => setSearching(true),
         r  => setActiveRoute(r),
+        userProfile,
       );
       const prov = activeRoute?.provider;
       const mod  = activeRoute?.model;
@@ -701,17 +703,137 @@ function SimulatorTab() {
 }
 
 /* ══════════════════════════════════════════════════════════════
+   SETTINGS TAB
+══════════════════════════════════════════════════════════════ */
+function SettingsTab({ profile, setProfile, userProfile, setUserProfile }:{
+  profile: string;
+  setProfile: (p:string)=>void;
+  userProfile: UserProfile;
+  setUserProfile: (p:UserProfile)=>void;
+}) {
+  const [saved, setSaved] = useState(false);
+  const fieldStyle:React.CSSProperties = { ...inputBase, padding:'8px 12px' };
+
+  const save = async () => {
+    await sSet('aurum-user-profile', userProfile);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  const fields:[keyof UserProfile, string, string, string][] = [
+    ['name',    'Nombre',                    'Ej: Carlos',            'text'],
+    ['age',     'Edad',                      'Ej: 35',                'number'],
+    ['capital', 'Capital disponible (€)',    'Ej: 25000',             'number'],
+    ['income',  'Ingresos anuales brutos (€)','Ej: 45000',            'number'],
+    ['horizon', 'Horizonte temporal',        'Ej: 10-15 años',        'text'],
+    ['broker',  'Broker principal',          'Ej: DEGIRO, MyInvestor','text'],
+    ['country', 'País de residencia fiscal', 'España',                'text'],
+  ];
+
+  return (
+    <div style={{ height:'100%', overflow:'auto', padding:'24px 28px' }}>
+      <div style={{ maxWidth:700, margin:'0 auto', display:'flex', flexDirection:'column', gap:24 }}>
+
+        {/* Perfil de riesgo */}
+        <div>
+          <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.18em', fontWeight:600, color:C.goldL, marginBottom:4 }}>Perfil de Inversión</div>
+          <div style={{ fontSize:'.74em', color:C.muted, marginBottom:14 }}>Determina la estrategia de asignación y el tono del asesor.</div>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10 }}>
+            {Object.entries(PROFILES).map(([key, pf]) => {
+              const active = profile === key;
+              return (
+                <button key={key} onClick={() => setProfile(key)} style={{ background:active?`${pf.color}18`:C.surf2, border:`1px solid ${active?pf.color+'55':C.border}`, borderRadius:13, padding:'16px 14px', cursor:'pointer', textAlign:'left', transition:'all .2s' }}>
+                  <div style={{ fontSize:'1.5em', marginBottom:8 }}>{pf.emoji}</div>
+                  <div style={{ fontSize:'.84em', fontWeight:600, color:active?pf.color:C.text, marginBottom:4 }}>{pf.label}</div>
+                  <div style={{ fontSize:'.68em', color:C.muted, lineHeight:1.4 }}>{pf.alloc}</div>
+                  {active && <div style={{ marginTop:8, fontSize:'.62em', color:pf.color, borderTop:`1px solid ${pf.color}33`, paddingTop:6, lineHeight:1.4 }}>{pf.sys.slice(0,80)}…</div>}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Datos personales */}
+        <div>
+          <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.18em', fontWeight:600, color:C.goldL, marginBottom:4 }}>Datos Personales</div>
+          <div style={{ fontSize:'.74em', color:C.muted, marginBottom:14 }}>La IA usa esta información para personalizar todas sus respuestas.</div>
+          <div style={{ background:C.surf2, border:`1px solid ${C.border}`, borderRadius:13, padding:'18px 20px', display:'flex', flexDirection:'column', gap:14 }}>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+              {fields.map(([key, label, placeholder, type]) => (
+                <div key={key}>
+                  <div style={{ fontSize:'.65em', color:C.muted, marginBottom:5, letterSpacing:'.5px' }}>{label}</div>
+                  <input
+                    type={type}
+                    value={userProfile[key]}
+                    onChange={e => setUserProfile({ ...userProfile, [key]: e.target.value })}
+                    placeholder={placeholder}
+                    style={fieldStyle}
+                  />
+                </div>
+              ))}
+            </div>
+            <div>
+              <div style={{ fontSize:'.65em', color:C.muted, marginBottom:5, letterSpacing:'.5px' }}>Notas adicionales para la IA</div>
+              <textarea
+                value={userProfile.notes}
+                onChange={e => setUserProfile({ ...userProfile, notes: e.target.value })}
+                placeholder="Ej: Trabajo en el sector tech, me interesan los ETFs de acumulación, tengo pérdidas fiscales pendientes de compensar…"
+                rows={3}
+                style={{ ...fieldStyle, resize:'vertical', lineHeight:1.55 }}
+              />
+            </div>
+            <button onClick={save}
+              style={{ alignSelf:'flex-start', background:saved?C.green:C.gold, border:'none', borderRadius:9, padding:'9px 22px', color:'#07070e', fontWeight:600, cursor:'pointer', fontSize:'.82em', fontFamily:"'Sora',sans-serif", transition:'all .2s', display:'flex', alignItems:'center', gap:7 }}>
+              {saved ? '✓ Guardado' : '💾 Guardar datos'}
+            </button>
+          </div>
+        </div>
+
+        {/* Nexus Routing */}
+        <div>
+          <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.18em', fontWeight:600, color:C.goldL, marginBottom:4 }}>Nexus Routing</div>
+          <div style={{ fontSize:'.74em', color:C.muted, marginBottom:14 }}>Cada agente usa el modelo óptimo para su tarea.</div>
+          <div style={{ background:C.surf2, border:`1px solid ${C.border}`, borderRadius:13, overflow:'hidden' }}>
+            {([
+              ['◈ AURUM',  'Asesor general',      'anthropic', 'claude-sonnet-4-5',      'Mejor calidad conversacional + búsqueda web'],
+              ['🌐 MACRO', 'Análisis macro',       'openai',    'gpt-4o-search-preview',  'Datos macroeconómicos en tiempo real'],
+              ['⚖️ RIESGO','Gestión de riesgos',   'deepseek',  'deepseek-reasoner (R1)', 'Razonamiento matemático profundo (VaR, Sharpe)'],
+              ['🧾 FISCAL','Asesoría fiscal',       'anthropic', 'claude-sonnet-4-5',      'Interpretación de normativa fiscal española'],
+            ] as [string,string,string,string,string][]).map(([agent, role, prov, model, desc]) => {
+              const pm = PROVIDER_META[prov as keyof typeof PROVIDER_META];
+              return (
+                <div key={agent} style={{ display:'grid', gridTemplateColumns:'100px 130px 1fr', gap:12, padding:'12px 18px', borderBottom:`1px solid ${C.border}22`, alignItems:'center' }}>
+                  <div style={{ fontSize:'.84em', fontWeight:600, color:C.text }}>{agent}</div>
+                  <div>
+                    <div style={{ fontSize:'.72em', color:pm.color, fontFamily:"'DM Mono',monospace" }}>{model}</div>
+                    <div style={{ fontSize:'.62em', color:C.muted, marginTop:2 }}>{role}</div>
+                  </div>
+                  <div style={{ fontSize:'.68em', color:C.faint, lineHeight:1.4 }}>{desc}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════
    ROOT APP
 ══════════════════════════════════════════════════════════════ */
 export default function App() {
-  const [tab,       setTab]       = useState('chat');
-  const [profile,   setProfile]   = useState('moderado');
-  const [portfolio, setPortfolio] = useState<Position[]>([]);
+  const [tab,         setTab]         = useState('chat');
+  const [profile,     setProfile]     = useState('moderado');
+  const [portfolio,   setPortfolio]   = useState<Position[]>([]);
+  const [userProfile, setUserProfile] = useState<UserProfile>(EMPTY_PROFILE);
 
   useEffect(() => {
     bootstrap();
     initNexus();
     sGet('aurum-portfolio').then(p => { if (p) setPortfolio(p); });
+    sGet('aurum-user-profile').then(p => { if (p) setUserProfile(p); });
   }, []);
 
   const navItem = NAV.find(n => n.id === tab);
@@ -769,10 +891,11 @@ export default function App() {
         </header>
 
         <div style={{ flex:1, overflow:'hidden', position:'relative' }}>
-          {tab==='chat'      && <ChatTab profile={profile} portfolio={portfolio} />}
+          {tab==='chat'      && <ChatTab profile={profile} portfolio={portfolio} userProfile={userProfile} />}
           {tab==='portfolio' && <PortfolioTab portfolio={portfolio} setPortfolio={setPortfolio} />}
           {tab==='research'  && <ResearchTab />}
           {tab==='simulator' && <SimulatorTab />}
+          {tab==='settings'  && <SettingsTab profile={profile} setProfile={setProfile} userProfile={userProfile} setUserProfile={setUserProfile} />}
         </div>
       </div>
     </div>

@@ -23,6 +23,17 @@ export interface Position {
   currentPrice: number;
 }
 
+export interface UserProfile {
+  name: string;
+  age: string;
+  capital: string;
+  income: string;
+  horizon: string;
+  broker: string;
+  country: string;
+  notes: string;
+}
+
 export interface UserMemory {
   facts: string[];
   interactions: number;
@@ -33,6 +44,10 @@ export interface RouteResult {
   provider: Provider;
   model: string;
 }
+
+export const EMPTY_PROFILE: UserProfile = {
+  name: '', age: '', capital: '', income: '', horizon: '', broker: '', country: 'España', notes: '',
+};
 
 export const PROVIDER_META: Record<Provider, { label: string; color: string; short: string }> = {
   anthropic: { label: 'Claude',     color: '#c9a84c', short: 'Claude'    },

@@ -1,4 +1,4 @@
-import type { AgentKey, ChatMessage, Position, ResearchTask, RouteResult, UserMemory } from './types';
+import type { AgentKey, ChatMessage, Position, ResearchTask, RouteResult, UserMemory, UserProfile } from './types';
 import { callProvider } from './providers';
 import { routeAgent, routeTask } from './router';
 import { trimHistory } from './tokens';
@@ -8,8 +8,8 @@ import {
   buildFiscalPrompt, buildResearchPrompt, buildSynthesisPrompt,
 } from './prompts';
 
-export type { AgentKey, ChatMessage, DisplayMessage, Position, ResearchTask, UserMemory, Provider, RouteResult } from './types';
-export { PROVIDER_META } from './types';
+export type { AgentKey, ChatMessage, DisplayMessage, Position, ResearchTask, UserMemory, UserProfile, Provider, RouteResult } from './types';
+export { PROVIDER_META, EMPTY_PROFILE } from './types';
 export { PROFILES } from './prompts';
 export { clearMemory } from './memory';
 
@@ -30,12 +30,13 @@ export function buildSystemPrompt(
   agentKey: AgentKey,
   profile: string,
   portfolio: Position[],
+  user?: UserProfile,
 ): string {
   switch (agentKey) {
-    case 'aurum':  return buildAurumPrompt(profile, portfolio, _memory);
-    case 'macro':  return buildMacroPrompt(_memory);
-    case 'riesgo': return buildRiesgoPrompt(portfolio, _memory);
-    case 'fiscal': return buildFiscalPrompt(_memory);
+    case 'aurum':  return buildAurumPrompt(profile, portfolio, _memory, user);
+    case 'macro':  return buildMacroPrompt(_memory, user);
+    case 'riesgo': return buildRiesgoPrompt(portfolio, _memory, user);
+    case 'fiscal': return buildFiscalPrompt(_memory, user);
   }
 }
 
@@ -47,9 +48,10 @@ export async function nexusChat(
   portfolio: Position[],
   onSearch?: () => void,
   onRoute?: (r: RouteResult) => void,
+  user?: UserProfile,
 ): Promise<string> {
   const route   = routeAgent(agentKey);
-  const system  = buildSystemPrompt(agentKey, profile, portfolio);
+  const system  = buildSystemPrompt(agentKey, profile, portfolio, user);
   const trimmed = trimHistory(messages);
 
   if (onRoute) onRoute(route);
