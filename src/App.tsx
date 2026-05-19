@@ -277,10 +277,12 @@ function ChatTab({ profile, portfolio, userProfile }:{ profile:string; portfolio
       // Persist (cap at MAX_HIST messages)
       sSet(HIST_KEY(agentKey), finalHist.slice(-MAX_HIST));
     } catch(e:any) {
-      const errMsg: DisplayMessage = { role:'assistant', content:`⚠️ **Error**: ${e.message}` };
+      const detail = e?.message || String(e);
+      const errMsg: DisplayMessage = { role:'assistant', content:`⚠️ **Error**: ${detail}\n\nSi el error persiste, recarga la página (Ctrl+F5).` };
       const finalHist = [...withUser, errMsg];
       setHistories(h => ({ ...h, [agentKey]: finalHist }));
       sSet(HIST_KEY(agentKey), finalHist.slice(-MAX_HIST));
+      console.error('[AURUM] nexusChat error:', detail);
     } finally { setLoading(false); setSearching(false); }
   };
 

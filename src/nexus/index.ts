@@ -52,6 +52,7 @@ export async function nexusChat(
     case 'macro':  system = buildMacroPrompt(ctx);          break;
     case 'riesgo': system = buildRiesgoPrompt(ctx);         break;
     case 'fiscal': system = buildFiscalPrompt(ctx);         break;
+    default:       system = buildAurumPrompt(profile, ctx); break;
   }
 
   const trimmed = trimHistory(messages);

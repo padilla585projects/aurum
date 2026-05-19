@@ -1,6 +1,18 @@
 import type { Position, UserMemory, UserProfile } from './types';
 import type { ContextSelection } from './context';
 
+// ── Curated financial sources (used in all prompts with web search) ─────────
+const FINANCIAL_SOURCES = `Fuentes prioritarias:
+- Precios: finance.yahoo.com, investing.com, es.investing.com, marketwatch.com
+- Noticias ES: expansion.com, cincodias.elpais.com, eleconomista.es, bolsamania.com
+- Noticias EN: reuters.com, bloomberg.com, ft.com, wsj.com
+- ETFs/fondos: justetf.com, etfdb.com, morningstar.es
+- Análisis: seekingalpha.com, tipranks.com, zacks.com
+- Macro: ecb.europa.eu, federalreserve.gov, bde.es, ine.es
+- Cripto: coinmarketcap.com, coingecko.com
+- España: bmemarketdata.es, cnmv.es
+Consulta varias fuentes. Prioriza datos del día actual.`;
+
 export const PROFILES: Record<string, { label: string; emoji: string; color: string; alloc: string; sys: string }> = {
   conservador: {
     label: 'Conservador', emoji: '🛡️', color: '#5b9cf6',
@@ -83,18 +95,6 @@ export function buildFiscalPrompt(ctx: ContextSelection): string {
 
 Tienes búsqueda web para normativa (DGT/AEAT/BOE). Aclara que no sustituyes a un asesor oficial. Responde en español con ejemplos numéricos y referencias normativas.`;
 }
-
-// ── Financial sources for web search ───────────────────────────
-const FINANCIAL_SOURCES = `Fuentes prioritarias para búsqueda:
-- Precios/datos: finance.yahoo.com, marketwatch.com, investing.com, es.investing.com
-- Noticias ES: expansion.com, cincodias.elpais.com, eleconomista.es, bolsamania.com
-- Noticias EN: reuters.com/finance, bloomberg.com, ft.com, wsj.com/markets
-- ETFs/fondos: etfdb.com, justetf.com, morningstar.es, morningstar.com
-- Análisis: seekingalpha.com, fool.com, zacks.com, tipranks.com
-- Macro/BCE/Fed: ecb.europa.eu, federalreserve.gov, bde.es, ine.es
-- Cripto: coinmarketcap.com, coingecko.com, messari.io
-- IBEX/España: bolsas y mercados españoles (bmemarketdata.es), cnmv.es
-Consulta SIEMPRE varias fuentes antes de responder. Prioriza datos del día actual.`;
 
 // ── Research prompts ────────────────────────────────────────────
 
