@@ -1,0 +1,13 @@
+{
+  "name": "AURUM — Investment Advisor",
+  "short_name": "AURUM",
+  "description": "Tu asesor de inversión personal con IA",
+  "theme_color": "#c9a84c",
+  "background_color": "#07070e",
+  "display": "standalone",
+  "start_url": "/",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
