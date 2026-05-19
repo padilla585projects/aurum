@@ -54,7 +54,7 @@ export async function extractFacts(
       .map(f => f.trim())
       .filter(f => f && f.toLowerCase() !== 'ninguno' && f.length > 10);
 
-    const merged = [...new Set([...existing.facts, ...newFacts])].slice(-20);
+    const merged = [...new Set([...existing.facts, ...newFacts])].slice(-12);
     const updated: UserMemory = {
       facts: merged,
       interactions: existing.interactions + 1,
