@@ -1,6 +1,6 @@
 import type { AgentKey, ChatMessage, Position, ResearchTask, RouteResult, UserMemory, UserProfile } from './types';
 import { callProvider } from './providers';
-import { routeAgent, routeTask } from './router';
+import { routeAgent, routeTask, classifyQuery } from './router';
 import { trimHistory } from './tokens';
 import { loadMemory, saveMemory, extractFacts } from './memory';
 import { selectContext } from './context';
@@ -14,6 +14,7 @@ export type { AgentKey, ChatMessage, DisplayMessage, Position, ResearchTask, Use
 export { PROVIDER_META, EMPTY_PROFILE } from './types';
 export { PROFILES } from './prompts';
 export { clearMemory } from './memory';
+export { classifyQuery } from './router';
 
 // ── Singleton memory state ─────────────────────────────────────
 let _memory: UserMemory = { facts: [], interactions: 0, lastUpdated: 0 };

@@ -5,7 +5,7 @@ import {
 } from 'recharts';
 import {
   initNexus, getMemory, nexusChat, nexusResearch, nexusPrices,
-  PROVIDER_META, PROFILES, EMPTY_PROFILE,
+  classifyQuery, PROVIDER_META, PROFILES, EMPTY_PROFILE,
 } from './nexus/index';
 import type { AgentKey, ChatMessage, DisplayMessage, Position, RouteResult, UserProfile } from './nexus/index';
 import { callAnthropic } from './nexus/providers';
@@ -185,44 +185,38 @@ function MemoryPanel({ onClose }:{ onClose:()=>void }) {
 /* ══════════════════════════════════════════════════════════════
    CHAT TAB
 ══════════════════════════════════════════════════════════════ */
-const HIST_KEY = (a:string) => `aurum-hist-${a}`;
+const HIST_KEY_AUTO = 'aurum-hist-auto';
 const MAX_HIST = 80;
 
-const WELCOME: Record<AgentKey, DisplayMessage> = {
-  aurum:  { role:'assistant', content:`Bienvenido. Soy **AURUM**, tu asesor de inversión personal con IA.\n\nEstoy conectado a Claude, GPT-4o y DeepSeek — cada agente usa el modelo que mejor se adapta a su tarea.\n\n## ¿Cómo empezamos?\n- Cuéntame tu situación: capital disponible, horizonte y objetivo\n- O lanza cualquier pregunta directamente 👇`, provider:'anthropic' },
-  macro:  { role:'assistant', content:`Soy **MACRO** — análisis macroeconómico en tiempo real con GPT-4o Search.\n\nBusco datos actualizados de tipos, inflación, ciclos y divisas antes de responderte.\n\n¿Qué quieres saber del panorama macro actual?`, provider:'openai' },
-  riesgo: { role:'assistant', content:`Soy **RIESGO** — análisis cuantitativo profundo con DeepSeek R1.\n\nCalculo VaR, Sharpe, drawdown máximo y estrategias de cobertura con razonamiento matemático paso a paso.\n\n¿Quieres que analice tu cartera o un activo concreto?`, provider:'deepseek' },
-  fiscal: { role:'assistant', content:`Soy **FISCAL** — tu asesor fiscal para inversiones en España, con Claude.\n\nDomino IRPF, plusvalías, la regla de los 2 meses, diferencias ETF vs fondo y optimización fiscal.\n\n¿En qué te puedo ayudar?`, provider:'anthropic' },
+const WELCOME_AUTO: DisplayMessage = {
+  role: 'assistant',
+  content: `Bienvenido a **AURUM Nexus** — tu asesor financiero con IA.\n\nDetecto automáticamente qué experto usar según tu pregunta:\n- 🌐 **MACRO** · mercados, economía y noticias en tiempo real\n- ⚖️ **RIESGO** · VaR, Sharpe, volatilidad y análisis cuantitativo\n- 🧾 **FISCAL** · IRPF, plusvalías y optimización fiscal en España\n- ◈ **AURUM** · estrategia, cartera y asesoramiento general\n\n¿En qué te puedo ayudar?`,
+  provider: 'anthropic',
+  agent: 'aurum',
 };
 
 function ChatTab({ profile, portfolio, userProfile }:{ profile:string; portfolio:Position[]; userProfile:UserProfile }) {
-  const [agentKey, setAgentKey] = useState<AgentKey>('aurum');
-  const [histories, setHistories] = useState<Record<AgentKey, DisplayMessage[]>>({
-    aurum: [WELCOME.aurum], macro: [WELCOME.macro], riesgo: [WELCOME.riesgo], fiscal: [WELCOME.fiscal],
-  });
+  const [history, setHistory]     = useState<DisplayMessage[]>([WELCOME_AUTO]);
   const [histLoaded, setHistLoaded] = useState(false);
-  const [input, setInput]       = useState('');
-  const [loading, setLoading]   = useState(false);
+  const [input, setInput]         = useState('');
+  const [loading, setLoading]     = useState(false);
   const [searching, setSearching] = useState(false);
   const [activeRoute, setActiveRoute] = useState<RouteResult|null>(null);
-  const [file, setFile]         = useState<{ name:string; type:string; b64:string }|null>(null);
-  const [showMem, setShowMem]   = useState(false);
+  const [pendingAgent, setPendingAgent] = useState<AgentKey>('aurum');
+  const [file, setFile]           = useState<{ name:string; type:string; b64:string }|null>(null);
+  const [showMem, setShowMem]     = useState(false);
   const endRef  = useRef<HTMLDivElement>(null);
   const taRef   = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  // Load persistent histories on mount
   useEffect(() => {
-    Promise.all((['aurum','macro','riesgo','fiscal'] as AgentKey[]).map(async k => {
-      const saved = await sGet(HIST_KEY(k));
-      return [k, saved && saved.length > 0 ? saved : [WELCOME[k]]] as [AgentKey, DisplayMessage[]];
-    })).then(entries => {
-      setHistories(Object.fromEntries(entries) as Record<AgentKey, DisplayMessage[]>);
+    sGet(HIST_KEY_AUTO).then(saved => {
+      setHistory(saved && saved.length > 0 ? saved : [WELCOME_AUTO]);
       setHistLoaded(true);
     });
   }, []);
 
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior:'smooth' }); }, [histories, loading]);
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior:'smooth' }); }, [history, loading]);
 
   const handleFile = (e:React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0]; if (!f) return;
@@ -240,6 +234,10 @@ function ChatTab({ profile, portfolio, userProfile }:{ profile:string; portfolio
     setInput('');
     if (taRef.current) taRef.current.style.height = 'auto';
 
+    // Auto-detect which expert to use
+    const agentKey = classifyQuery(txt);
+    setPendingAgent(agentKey);
+
     const displayMsg = file ? `📎 *${file.name}*\n${txt}` : txt;
     let apiContent: string | unknown[] = txt;
     if (file?.type.startsWith('image/')) {
@@ -247,20 +245,28 @@ function ChatTab({ profile, portfolio, userProfile }:{ profile:string; portfolio
         { type:'image', source:{ type:'base64', media_type:file.type, data:file.b64 } },
         { type:'text',  text:txt },
       ];
+    } else if (file?.type === 'application/pdf') {
+      const isAnthropicAgent = agentKey === 'aurum' || agentKey === 'fiscal';
+      if (isAnthropicAgent) {
+        apiContent = [
+          { type:'document', source:{ type:'base64', media_type:'application/pdf', data:file.b64 } },
+          { type:'text', text:txt },
+        ];
+      } else {
+        apiContent = `[PDF adjunto: ${file.name} — solo AURUM y FISCAL pueden leer PDFs]\n${txt}`;
+      }
     }
     setFile(null);
 
-    const userDisplayMsg:DisplayMessage = { role:'user', content:displayMsg };
-    const withUser = [...histories[agentKey], userDisplayMsg];
-    setHistories(h => ({ ...h, [agentKey]: withUser }));
+    const userDisplayMsg: DisplayMessage = { role:'user', content:displayMsg };
+    const withUser = [...history, userDisplayMsg];
+    setHistory(withUser);
     setLoading(true); setSearching(false); setActiveRoute(null);
 
-    // Reconstruct API history from display messages (skip welcome, last 20 msgs)
     const apiHist: ChatMessage[] = withUser
-      .filter((m,i) => !(i===0 && m.role==='assistant'))  // skip welcome
+      .filter((m,i) => !(i===0 && m.role==='assistant'))
       .slice(-20)
       .map(m => ({ role: m.role as 'user'|'assistant', content: m.content }));
-    // Replace last user content with actual api content (may include image)
     if (apiHist.length > 0) apiHist[apiHist.length-1] = { role:'user', content: apiContent };
 
     let routeResult: RouteResult|null = null;
@@ -271,74 +277,58 @@ function ChatTab({ profile, portfolio, userProfile }:{ profile:string; portfolio
         r  => { setActiveRoute(r); routeResult = r; },
         userProfile,
       );
-      const assistantMsg: DisplayMessage = { role:'assistant', content:reply, provider:routeResult?.provider, model:routeResult?.model };
+      const assistantMsg: DisplayMessage = { role:'assistant', content:reply, provider:routeResult?.provider, model:routeResult?.model, agent:agentKey };
       const finalHist = [...withUser, assistantMsg];
-      setHistories(h => ({ ...h, [agentKey]: finalHist }));
-      // Persist (cap at MAX_HIST messages)
-      sSet(HIST_KEY(agentKey), finalHist.slice(-MAX_HIST));
+      setHistory(finalHist);
+      sSet(HIST_KEY_AUTO, finalHist.slice(-MAX_HIST));
     } catch(e:any) {
       const detail = e?.message || String(e);
-      const errMsg: DisplayMessage = { role:'assistant', content:`⚠️ **Error**: ${detail}\n\nSi el error persiste, recarga la página (Ctrl+F5).` };
+      const errMsg: DisplayMessage = { role:'assistant', content:`⚠️ **Error**: ${detail}\n\nSi el error persiste, recarga la página (Ctrl+F5).`, agent:agentKey };
       const finalHist = [...withUser, errMsg];
-      setHistories(h => ({ ...h, [agentKey]: finalHist }));
-      sSet(HIST_KEY(agentKey), finalHist.slice(-MAX_HIST));
+      setHistory(finalHist);
+      sSet(HIST_KEY_AUTO, finalHist.slice(-MAX_HIST));
       console.error('[AURUM] nexusChat error:', detail);
     } finally { setLoading(false); setSearching(false); }
   };
 
-  const agent = AGENTS[agentKey];
-  const msgs  = histories[agentKey];
   const memCount = getMemory().facts.length;
+  const loadingAgent = AGENTS[pendingAgent];
 
   return (
     <div style={{ display:'flex', flexDirection:'column', height:'100%', overflow:'hidden' }}>
-      {/* Agent tabs */}
-      <div style={{ display:'flex', background:C.surf, borderBottom:`1px solid ${C.border}`, flexShrink:0, padding:'0 12px' }}>
-        {(Object.entries(AGENTS) as [AgentKey, typeof AGENTS[AgentKey]][]).map(([key, ag]) => {
-          const active = key === agentKey;
-          const pm = PROVIDER_META[key==='macro'?'openai':key==='riesgo'?'deepseek':'anthropic'];
-          return (
-            <button key={key} className="agent-tab" onClick={() => setAgentKey(key)}
-              style={{ padding:'10px 14px 11px', background:'transparent', border:'none', borderBottom:`2px solid ${active?ag.color:'transparent'}`, color:active?ag.color:C.muted, cursor:'pointer', fontSize:'.74em', fontWeight:active?600:400, fontFamily:"'Sora',sans-serif", transition:'all .18s', borderRadius:'4px 4px 0 0', display:'flex', alignItems:'center', gap:6, flexShrink:0 }}>
-              <span>{ag.icon}</span>
-              <span>{ag.name}</span>
-              {active && <span style={{ fontSize:'.68em', color:pm.color, opacity:.8 }}>· {pm.short}</span>}
-            </button>
-          );
-        })}
+      {/* Header bar */}
+      <div style={{ display:'flex', alignItems:'center', background:C.surf, borderBottom:`1px solid ${C.border}`, flexShrink:0, padding:'0 14px', height:42 }}>
+        <span style={{ fontSize:'.72em', color:C.gold, fontFamily:"'DM Mono',monospace", letterSpacing:'.8px', fontWeight:600 }}>AURUM NEXUS</span>
+        <span style={{ fontSize:'.62em', color:C.faint, marginLeft:10 }}>modo automático</span>
         <div style={{ flex:1 }} />
-        {/* Clear chat */}
-        <button onClick={() => {
-          const fresh = [WELCOME[agentKey]];
-          setHistories(h => ({ ...h, [agentKey]: fresh }));
-          sSet(HIST_KEY(agentKey), fresh);
-        }} title="Limpiar conversación"
+        {searching && (
+          <div style={{ display:'flex', alignItems:'center', gap:5, marginRight:8, fontSize:'.65em', color:C.gold }}>
+            <Spinner /><span>buscando…</span>
+          </div>
+        )}
+        <button onClick={() => { setHistory([WELCOME_AUTO]); sSet(HIST_KEY_AUTO, [WELCOME_AUTO]); }}
+          title="Limpiar conversación"
           style={{ display:'flex', alignItems:'center', padding:'0 8px', background:'transparent', border:'none', cursor:'pointer', fontSize:'.72em', color:C.faint }}
           onMouseEnter={e=>(e.currentTarget.style.color=C.red)} onMouseLeave={e=>(e.currentTarget.style.color=C.faint)}>
           🗑
         </button>
-        {/* Memory indicator */}
         <button onClick={() => setShowMem(v=>!v)} title="Memoria Nexus"
           style={{ display:'flex', alignItems:'center', gap:5, padding:'0 10px', background:'transparent', border:'none', cursor:'pointer', fontSize:'.65em', color:memCount>0?C.gold:C.faint }}>
           🧠 {memCount > 0 ? <span style={{ color:C.gold }}>{memCount}</span> : <span>0</span>}
         </button>
-        {searching && (
-          <div style={{ display:'flex', alignItems:'center', gap:5, padding:'0 8px', fontSize:'.65em', color:C.gold }}>
-            <Spinner /><span>buscando…</span>
-          </div>
-        )}
       </div>
 
       {/* Messages */}
       <div style={{ flex:1, overflow:'auto', padding:'18px 22px' }}>
-        {msgs.map((m,i) => {
+        {history.map((m,i) => {
           const isUser = m.role === 'user';
+          const msgAgent = AGENTS[m.agent || 'aurum'];
           return (
             <div key={i} className="msg-in" style={{ display:'flex', flexDirection:'column', alignItems:isUser?'flex-end':'flex-start', marginBottom:14 }}>
               {!isUser && (
                 <div style={{ display:'flex', alignItems:'center', gap:7, marginBottom:5 }}>
-                  <div style={{ width:24, height:24, borderRadius:7, background:`linear-gradient(135deg,${agent.color}70,${agent.color})`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:10, fontWeight:800, color:'#07070e', flexShrink:0 }}>{agent.icon}</div>
-                  <span style={{ fontSize:'.62em', color:C.muted, fontFamily:"'DM Mono',monospace", letterSpacing:'.5px' }}>{agent.name}</span>
+                  <div style={{ width:24, height:24, borderRadius:7, background:`linear-gradient(135deg,${msgAgent.color}70,${msgAgent.color})`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:10, fontWeight:800, color:'#07070e', flexShrink:0 }}>{msgAgent.icon}</div>
+                  <span style={{ fontSize:'.62em', color:C.muted, fontFamily:"'DM Mono',monospace", letterSpacing:'.5px' }}>{msgAgent.name}</span>
                   <ProviderBadge provider={m.provider} model={m.model} />
                 </div>
               )}
@@ -350,14 +340,12 @@ function ChatTab({ profile, portfolio, userProfile }:{ profile:string; portfolio
         })}
         {loading && (
           <div className="msg-in" style={{ display:'flex', alignItems:'center', gap:8, marginBottom:14 }}>
-            <div style={{ width:24, height:24, borderRadius:7, background:`linear-gradient(135deg,${agent.color}70,${agent.color})`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:10 }}>{agent.icon}</div>
+            <div style={{ width:24, height:24, borderRadius:7, background:`linear-gradient(135deg,${loadingAgent.color}70,${loadingAgent.color})`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:10 }}>{loadingAgent.icon}</div>
             <div style={{ background:C.surf2, border:`1px solid ${C.border}`, borderRadius:'3px 14px 14px 14px', padding:'12px 16px', display:'flex', gap:10, alignItems:'center' }}>
-              <Dots />
-              {activeRoute && (
-                <span style={{ fontSize:'.68em', color:PROVIDER_META[activeRoute.provider].color, fontFamily:"'DM Mono',monospace" }}>
-                  {searching ? `${PROVIDER_META[activeRoute.provider].short} buscando…` : `${PROVIDER_META[activeRoute.provider].short} pensando…`}
-                </span>
-              )}
+              <Dots color={loadingAgent.color} />
+              <span style={{ fontSize:'.68em', color:loadingAgent.color, fontFamily:"'DM Mono',monospace" }}>
+                {loadingAgent.name}{activeRoute ? (searching ? ' buscando…' : ' pensando…') : '…'}
+              </span>
             </div>
           </div>
         )}
@@ -373,12 +361,12 @@ function ChatTab({ profile, portfolio, userProfile }:{ profile:string; portfolio
           </div>
         )}
         <div style={{ display:'flex', gap:8, alignItems:'flex-end', background:C.surf2, border:`1px solid ${input||file?'#2a2a50':C.border}`, borderRadius:13, padding:'9px 12px', transition:'border-color .2s', boxShadow:input?`0 0 0 2px ${C.gold}08`:'none' }}>
-          <button onClick={()=>fileRef.current?.click()} style={{ background:'transparent', border:'none', color:C.muted, cursor:'pointer', fontSize:'1.1em', padding:'0 2px', flexShrink:0 }} title="Adjuntar imagen">📎</button>
-          <input ref={fileRef} type="file" accept="image/*" style={{ display:'none' }} onChange={handleFile} />
-          <textarea ref={taRef} value={input} rows={1} disabled={loading}
+          <button onClick={()=>fileRef.current?.click()} style={{ background:'transparent', border:'none', color:C.muted, cursor:'pointer', fontSize:'1.1em', padding:'0 2px', flexShrink:0 }} title="Adjuntar imagen o PDF">📎</button>
+          <input ref={fileRef} type="file" accept="image/*,application/pdf" style={{ display:'none' }} onChange={handleFile} />
+          <textarea ref={taRef} value={input} rows={1}
             onChange={e=>{setInput(e.target.value);e.target.style.height='auto';e.target.style.height=Math.min(e.target.scrollHeight,120)+'px';}}
             onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();}}}
-            placeholder={`Pregunta a ${agent.name}… (Enter para enviar)`}
+            placeholder="Pregunta lo que quieras… (Enter para enviar)"
             style={{ flex:1, background:'transparent', border:'none', outline:'none', color:C.text, fontSize:'.86em', resize:'none', fontFamily:"'Sora',sans-serif", lineHeight:1.55, maxHeight:120 }}
           />
           <button className="send-btn" onClick={()=>send()} disabled={loading||(!input.trim()&&!file)}

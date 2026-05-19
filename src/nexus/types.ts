@@ -12,6 +12,7 @@ export interface DisplayMessage {
   content: string;
   provider?: Provider;
   model?: string;
+  agent?: AgentKey;
 }
 
 export interface Position {
