@@ -8,6 +8,7 @@ import {
   PROVIDER_META, PROFILES, EMPTY_PROFILE,
 } from './nexus/index';
 import type { AgentKey, ChatMessage, DisplayMessage, Position, RouteResult, UserProfile } from './nexus/index';
+import { callAnthropic } from './nexus/providers';
 
 /* ══════════════════════════════════════════════════════════════
    BOOTSTRAP
@@ -391,11 +392,182 @@ function ChatTab({ profile, portfolio, userProfile }:{ profile:string; portfolio
 /* ══════════════════════════════════════════════════════════════
    PORTFOLIO TAB
 ══════════════════════════════════════════════════════════════ */
+const IMPORT_SYSTEM = `Eres un parser de carteras de inversión. Extrae todas las posiciones del texto/imagen proporcionado.
+Responde SOLO con JSON válido (sin texto, sin backticks):
+[{"ticker":"AAPL","name":"Apple Inc.","shares":10,"avgPrice":150.00,"currentPrice":185.00},...]
+- ticker: símbolo bursátil en mayúsculas (dedúcelo del nombre si no aparece explícito)
+- shares: número de acciones/participaciones (puede ser decimal)
+- avgPrice: precio medio de compra en EUR
+- currentPrice: precio actual en EUR (si no aparece, usa avgPrice)
+Si no hay posiciones válidas, responde: []`;
+
+async function parsePortfolioWithAI(
+  text?: string,
+  imageB64?: string,
+  imageType?: string,
+): Promise<Position[]> {
+  const content: unknown[] = [];
+  if (imageB64 && imageType) {
+    content.push({ type:'image', source:{ type:'base64', media_type:imageType, data:imageB64 } });
+  }
+  content.push({ type:'text', text: text || 'Extrae las posiciones de esta imagen de cartera.' });
+
+  const raw = await callAnthropic(
+    [{ role:'user', content }],
+    IMPORT_SYSTEM,
+    'claude-sonnet-4-5',
+  );
+  const json = raw.replace(/```[a-z]*\n?|```/g, '').trim();
+  const parsed = JSON.parse(json) as any[];
+  return parsed.map((p, i) => ({
+    id: Date.now() + i,
+    ticker: String(p.ticker || '?').toUpperCase(),
+    name: String(p.name || p.ticker || '?'),
+    shares: +p.shares || 0,
+    avgPrice: +p.avgPrice || 0,
+    currentPrice: +p.currentPrice || +p.avgPrice || 0,
+  })).filter(p => p.ticker !== '?' && p.shares > 0);
+}
+
+function ImportModal({ onImport, onClose }:{ onImport:(p:Position[])=>void; onClose:()=>void }) {
+  const [tab,       setTab]     = useState<'paste'|'image'>('paste');
+  const [text,      setText]    = useState('');
+  const [image,     setImage]   = useState<{ b64:string; type:string; preview:string }|null>(null);
+  const [parsing,   setParsing] = useState(false);
+  const [preview,   setPreview] = useState<Position[]|null>(null);
+  const [error,     setError]   = useState('');
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const loadImage = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0]; if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      setImage({ b64: result.split(',')[1], type: f.type, preview: result });
+    };
+    reader.readAsDataURL(f);
+    e.target.value = '';
+  };
+
+  const parse = async () => {
+    setParsing(true); setError(''); setPreview(null);
+    try {
+      const positions = await parsePortfolioWithAI(
+        tab === 'paste' ? text : undefined,
+        tab === 'image' ? image?.b64 : undefined,
+        tab === 'image' ? image?.type : undefined,
+      );
+      if (!positions.length) { setError('No se encontraron posiciones. Intenta con más detalle.'); }
+      else setPreview(positions);
+    } catch(e:any) { setError(`Error: ${e.message}`); }
+    finally { setParsing(false); }
+  };
+
+  const canParse = tab==='paste' ? text.trim().length > 10 : !!image;
+
+  return (
+    <div style={{ position:'fixed', inset:0, background:'#00000088', zIndex:200, display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}>
+      <div style={{ background:C.surf, border:`1px solid ${C.border}`, borderRadius:16, width:'100%', maxWidth:560, maxHeight:'85vh', overflow:'auto', boxShadow:'0 24px 64px #00000099' }}>
+        {/* Header */}
+        <div style={{ padding:'16px 20px', borderBottom:`1px solid ${C.border}`, display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+          <div>
+            <div style={{ fontSize:'.88em', fontWeight:600, color:C.goldL }}>Importar cartera con IA</div>
+            <div style={{ fontSize:'.65em', color:C.muted, marginTop:2 }}>Claude lee tu broker y extrae las posiciones automáticamente</div>
+          </div>
+          <button onClick={onClose} style={{ background:'transparent', border:'none', color:C.muted, cursor:'pointer', fontSize:'1.1em' }}>✕</button>
+        </div>
+
+        <div style={{ padding:'18px 20px', display:'flex', flexDirection:'column', gap:16 }}>
+          {/* Tabs */}
+          <div style={{ display:'flex', gap:8 }}>
+            {([['paste','📋 Pegar texto'],['image','🖼 Captura de pantalla']] as const).map(([t,l]) => (
+              <button key={t} onClick={() => setTab(t)}
+                style={{ flex:1, padding:'8px', borderRadius:9, background:tab===t?`${C.gold}18`:C.surf2, border:`1px solid ${tab===t?C.gold+'44':C.border}`, color:tab===t?C.gold:C.muted, cursor:'pointer', fontSize:'.75em', fontFamily:"'Sora',sans-serif" }}>
+                {l}
+              </button>
+            ))}
+          </div>
+
+          {/* Instructions */}
+          <div style={{ background:'#0a0a1a', border:`1px solid ${C.border}`, borderRadius:9, padding:'10px 13px', fontSize:'.7em', color:C.muted, lineHeight:1.6 }}>
+            {tab==='paste'
+              ? <>En <strong style={{ color:C.text }}>Trade Republic</strong>: abre la app → Cartera → selecciona y copia el texto con todas las posiciones.<br/>También funciona con <strong style={{ color:C.text }}>DEGIRO, eToro, Indexa, MyInvestor</strong> y cualquier broker.</>
+              : <>Haz una captura de pantalla de tu cartera en cualquier broker y súbela aquí. Claude leerá las posiciones directamente de la imagen.</>
+            }
+          </div>
+
+          {/* Input */}
+          {tab==='paste' ? (
+            <textarea value={text} onChange={e=>setText(e.target.value)} rows={7}
+              placeholder={"Pega aquí el texto de tu cartera...\n\nEjemplo (Trade Republic):\nApple Inc.\nAAPL · 10 acc.\nValor: 1.850 €  Precio medio: 150,00 €\n\nVanguard FTSE All-World\nVWCE · 5 acc.\nValor: 940 €  Precio medio: 110,00 €"}
+              style={{ background:C.surf2, border:`1px solid ${C.border2}`, borderRadius:9, padding:'10px 13px', color:C.text, fontSize:'.8em', resize:'vertical', fontFamily:"'DM Mono',monospace", lineHeight:1.6, outline:'none', width:'100%' }}
+            />
+          ) : (
+            <div>
+              <input ref={fileRef} type="file" accept="image/*" style={{ display:'none' }} onChange={loadImage} />
+              {image ? (
+                <div style={{ position:'relative' }}>
+                  <img src={image.preview} alt="preview" style={{ width:'100%', borderRadius:9, border:`1px solid ${C.border}`, maxHeight:200, objectFit:'contain', background:'#000' }} />
+                  <button onClick={() => setImage(null)} style={{ position:'absolute', top:6, right:6, background:'#00000099', border:'none', color:'#fff', borderRadius:6, padding:'3px 8px', cursor:'pointer', fontSize:'.72em' }}>✕ Cambiar</button>
+                </div>
+              ) : (
+                <button onClick={() => fileRef.current?.click()}
+                  style={{ width:'100%', padding:'28px', background:C.surf2, border:`2px dashed ${C.border2}`, borderRadius:9, color:C.muted, cursor:'pointer', fontSize:'.8em', display:'flex', flexDirection:'column', alignItems:'center', gap:8 }}>
+                  <span style={{ fontSize:'2em' }}>🖼</span>
+                  <span>Haz clic para subir la captura</span>
+                  <span style={{ fontSize:'.85em', opacity:.6 }}>PNG, JPG, WebP</span>
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Parse button */}
+          <button onClick={parse} disabled={!canParse || parsing}
+            style={{ padding:'10px', background:canParse&&!parsing?C.gold:'#1a1a28', border:'none', borderRadius:9, color:canParse&&!parsing?'#07070e':C.muted, fontWeight:600, cursor:'pointer', fontSize:'.82em', fontFamily:"'Sora',sans-serif", display:'flex', alignItems:'center', justifyContent:'center', gap:8 }}>
+            {parsing ? <><Spinner /> Claude está leyendo tu cartera…</> : '✨ Analizar con IA'}
+          </button>
+
+          {error && <div style={{ color:C.red, fontSize:'.75em', padding:'8px 12px', background:'#2a0a0a', borderRadius:8, border:`1px solid ${C.red}33` }}>{error}</div>}
+
+          {/* Preview */}
+          {preview && preview.length > 0 && (
+            <div>
+              <div style={{ fontSize:'.68em', color:C.muted, letterSpacing:'1px', textTransform:'uppercase', marginBottom:8 }}>Posiciones detectadas · {preview.length}</div>
+              <div style={{ background:C.surf2, border:`1px solid ${C.border}`, borderRadius:9, overflow:'hidden', marginBottom:12 }}>
+                {preview.map((p,i) => (
+                  <div key={i} style={{ display:'grid', gridTemplateColumns:'70px 1fr 55px 70px 70px', gap:8, padding:'9px 14px', borderBottom:`1px solid ${C.border}22`, fontSize:'.78em', alignItems:'center' }}>
+                    <span style={{ color:C.gold, fontWeight:600, fontFamily:"'DM Mono',monospace" }}>{p.ticker}</span>
+                    <span style={{ color:C.muted, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{p.name}</span>
+                    <span style={{ color:C.muted, fontFamily:"'DM Mono',monospace" }}>{p.shares}</span>
+                    <span style={{ color:C.muted, fontFamily:"'DM Mono',monospace" }}>{p.avgPrice}€</span>
+                    <span style={{ color:C.text,  fontFamily:"'DM Mono',monospace" }}>{p.currentPrice}€</span>
+                  </div>
+                ))}
+              </div>
+              <div style={{ display:'flex', gap:8 }}>
+                <button onClick={() => onImport(preview)}
+                  style={{ flex:1, padding:'10px', background:C.green, border:'none', borderRadius:9, color:'#07070e', fontWeight:600, cursor:'pointer', fontSize:'.82em', fontFamily:"'Sora',sans-serif" }}>
+                  ✓ Importar {preview.length} posiciones
+                </button>
+                <button onClick={() => setPreview(null)}
+                  style={{ padding:'10px 16px', background:'transparent', border:`1px solid ${C.border}`, borderRadius:9, color:C.muted, cursor:'pointer', fontSize:'.82em', fontFamily:"'Sora',sans-serif" }}>
+                  Editar
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PortfolioTab({ portfolio, setPortfolio }:{ portfolio:Position[]; setPortfolio:(p:Position[])=>void }) {
   const empty = { ticker:'', name:'', shares:'', avgPrice:'', currentPrice:'' };
-  const [form, setForm]     = useState(empty);
-  const [adding, setAdding] = useState(false);
-  const [upd, setUpd]       = useState(false);
+  const [form, setForm]       = useState(empty);
+  const [adding, setAdding]   = useState(false);
+  const [upd, setUpd]         = useState(false);
+  const [importing, setImporting] = useState(false);
 
   const totalVal  = portfolio.reduce((a,p)=>a+p.shares*p.currentPrice,0);
   const totalCost = portfolio.reduce((a,p)=>a+p.shares*p.avgPrice,0);
@@ -445,6 +617,10 @@ function PortfolioTab({ portfolio, setPortfolio }:{ portfolio:Position[]; setPor
               <button onClick={refreshPrices} disabled={!portfolio.length||upd}
                 style={{ background:'transparent', border:`1px solid ${C.border2}`, color:upd?C.muted:C.gold, borderRadius:7, padding:'4px 10px', cursor:'pointer', fontSize:'.7em', fontFamily:"'Sora',sans-serif", display:'flex', alignItems:'center', gap:5 }}>
                 {upd?<Spinner/>:'↻'} {upd?'Actualizando…':'Actualizar precios'}
+              </button>
+              <button onClick={()=>setImporting(true)}
+                style={{ background:'rgba(91,156,246,.1)', border:`1px solid #5b9cf644`, color:C.blue, borderRadius:7, padding:'4px 10px', cursor:'pointer', fontSize:'.7em', fontFamily:"'Sora',sans-serif", display:'flex', alignItems:'center', gap:5 }}>
+                ✨ Importar broker
               </button>
               <button onClick={()=>setAdding(v=>!v)}
                 style={{ background:adding?C.faint+'22':'rgba(201,168,76,.12)', border:`1px solid ${adding?C.border:C.gold+'44'}`, color:adding?C.muted:C.gold, borderRadius:7, padding:'4px 10px', cursor:'pointer', fontSize:'.7em', fontFamily:"'Sora',sans-serif" }}>
@@ -516,6 +692,15 @@ function PortfolioTab({ portfolio, setPortfolio }:{ portfolio:Position[]; setPor
           </Card>
         )}
       </div>
+      {importing && (
+        <ImportModal
+          onClose={() => setImporting(false)}
+          onImport={async positions => {
+            await save([...portfolio, ...positions]);
+            setImporting(false);
+          }}
+        />
+      )}
     </div>
   );
 }
