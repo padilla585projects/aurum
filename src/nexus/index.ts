@@ -7,6 +7,7 @@ import { selectContext } from './context';
 import {
   buildAurumPrompt, buildMacroPrompt, buildRiesgoPrompt,
   buildFiscalPrompt, buildResearchPrompt, buildSynthesisPrompt,
+  buildMarketBriefingPrompt,
 } from './prompts';
 
 export type { AgentKey, ChatMessage, DisplayMessage, Position, ResearchTask, UserMemory, UserProfile, Provider, RouteResult } from './types';
@@ -79,6 +80,16 @@ export async function nexusResearch(
   const system = task === 'synthesis' ? buildSynthesisPrompt() : buildResearchPrompt();
   if (onRoute) onRoute(route);
   return callProvider(route, [{ role: 'user', content: query }], system);
+}
+
+// ── Daily market briefing ──────────────────────────────────────
+export async function nexusMarketBriefing(): Promise<string> {
+  const route = routeAgent('macro'); // GPT-4o Search for live data
+  return callProvider(
+    route,
+    [{ role: 'user', content: '¿Cómo están los mercados hoy? Dame el briefing completo.' }],
+    buildMarketBriefingPrompt(),
+  );
 }
 
 // ── Portfolio price refresh ────────────────────────────────────

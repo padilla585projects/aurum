@@ -60,6 +60,7 @@ Perfil ${pf.label} ${pf.emoji}: ${pf.sys}
 Asignación: ${pf.alloc}${contextBlock(ctx)}
 
 Tienes búsqueda web. Úsala SIEMPRE para precios, noticias y datos recientes.
+${FINANCIAL_SOURCES}
 Responde en español. Sé directo: cifras, tickers ($VWCE), riesgos siempre. Sin garantías de rentabilidad.`;
 }
 
@@ -67,6 +68,7 @@ export function buildMacroPrompt(ctx: ContextSelection): string {
   return `Eres MACRO, analista macroeconómico de AURUM. Especialidad: política monetaria (BCE/Fed/BoJ), tipos, inflación (IPC/PCE), ciclos económicos, divisas (EUR/USD, DXY), materias primas (oro, petróleo, cobre).${contextBlock(ctx)}
 
 Tienes búsqueda web. BUSCA SIEMPRE datos actualizados: tipos actuales, actas Fed/BCE, inflación y empleo reciente.
+${FINANCIAL_SOURCES}
 Responde en español con rigor: cifras precisas, fechas, comparativas históricas. Conecta macro con implicaciones de inversión.`;
 }
 
@@ -82,14 +84,28 @@ export function buildFiscalPrompt(ctx: ContextSelection): string {
 Tienes búsqueda web para normativa (DGT/AEAT/BOE). Aclara que no sustituyes a un asesor oficial. Responde en español con ejemplos numéricos y referencias normativas.`;
 }
 
+// ── Financial sources for web search ───────────────────────────
+const FINANCIAL_SOURCES = `Fuentes prioritarias para búsqueda:
+- Precios/datos: finance.yahoo.com, marketwatch.com, investing.com, es.investing.com
+- Noticias ES: expansion.com, cincodias.elpais.com, eleconomista.es, bolsamania.com
+- Noticias EN: reuters.com/finance, bloomberg.com, ft.com, wsj.com/markets
+- ETFs/fondos: etfdb.com, justetf.com, morningstar.es, morningstar.com
+- Análisis: seekingalpha.com, fool.com, zacks.com, tipranks.com
+- Macro/BCE/Fed: ecb.europa.eu, federalreserve.gov, bde.es, ine.es
+- Cripto: coinmarketcap.com, coingecko.com, messari.io
+- IBEX/España: bolsas y mercados españoles (bmemarketdata.es), cnmv.es
+Consulta SIEMPRE varias fuentes antes de responder. Prioriza datos del día actual.`;
+
 // ── Research prompts ────────────────────────────────────────────
 
 export function buildResearchPrompt(): string {
-  return 'Analista financiero de élite. Investiga el activo con datos actualizados (búsqueda web). Cita cifras concretas. Responde en español, conciso pero completo.';
+  return `Analista financiero de élite. Investiga el activo con datos actualizados usando búsqueda web.
+${FINANCIAL_SOURCES}
+Cita cifras concretas con fecha. Responde en español, conciso pero completo.`;
 }
 
 export function buildSynthesisPrompt(): string {
-  return `Sintetiza un informe de inversión profesional. Estructura exacta:
+  return `Sintetiza un informe de inversión profesional basado en la investigación proporcionada. Estructura exacta:
 ## Resumen Ejecutivo
 ## Tesis de Inversión
 ## Puntos Fuertes (bull case)
@@ -98,4 +114,15 @@ export function buildSynthesisPrompt(): string {
 ## Veredicto de Inversión
 
 Concluye con: Comprar / Mantener / Evitar + razonamiento. Responde en español.`;
+}
+
+export function buildMarketBriefingPrompt(): string {
+  return `Eres AURUM generando un briefing diario de mercados. Busca y resume:
+1. Apertura/cierre de los principales índices hoy (IBEX35, S&P500, Nasdaq, Eurostoxx50, Nikkei)
+2. Movimientos relevantes en divisas (EUR/USD, DXY)
+3. Precio del oro, petróleo Brent y Bitcoin
+4. Noticia macro más importante del día
+5. Un activo destacado (subida o bajada notable >3%)
+${FINANCIAL_SOURCES}
+Formato: secciones cortas con cifras exactas. Datos de hoy. Responde en español.`;
 }
