@@ -184,24 +184,42 @@ function MemoryPanel({ onClose }:{ onClose:()=>void }) {
 /* ══════════════════════════════════════════════════════════════
    CHAT TAB
 ══════════════════════════════════════════════════════════════ */
+const HIST_KEY = (a:string) => `aurum-hist-${a}`;
+const MAX_HIST = 80;
+
+const WELCOME: Record<AgentKey, DisplayMessage> = {
+  aurum:  { role:'assistant', content:`Bienvenido. Soy **AURUM**, tu asesor de inversión personal con IA.\n\nEstoy conectado a Claude, GPT-4o y DeepSeek — cada agente usa el modelo que mejor se adapta a su tarea.\n\n## ¿Cómo empezamos?\n- Cuéntame tu situación: capital disponible, horizonte y objetivo\n- O lanza cualquier pregunta directamente 👇`, provider:'anthropic' },
+  macro:  { role:'assistant', content:`Soy **MACRO** — análisis macroeconómico en tiempo real con GPT-4o Search.\n\nBusco datos actualizados de tipos, inflación, ciclos y divisas antes de responderte.\n\n¿Qué quieres saber del panorama macro actual?`, provider:'openai' },
+  riesgo: { role:'assistant', content:`Soy **RIESGO** — análisis cuantitativo profundo con DeepSeek R1.\n\nCalculo VaR, Sharpe, drawdown máximo y estrategias de cobertura con razonamiento matemático paso a paso.\n\n¿Quieres que analice tu cartera o un activo concreto?`, provider:'deepseek' },
+  fiscal: { role:'assistant', content:`Soy **FISCAL** — tu asesor fiscal para inversiones en España, con Claude.\n\nDomino IRPF, plusvalías, la regla de los 2 meses, diferencias ETF vs fondo y optimización fiscal.\n\n¿En qué te puedo ayudar?`, provider:'anthropic' },
+};
+
 function ChatTab({ profile, portfolio, userProfile }:{ profile:string; portfolio:Position[]; userProfile:UserProfile }) {
   const [agentKey, setAgentKey] = useState<AgentKey>('aurum');
   const [histories, setHistories] = useState<Record<AgentKey, DisplayMessage[]>>({
-    aurum:  [{ role:'assistant', content:`Bienvenido. Soy **AURUM**, tu asesor de inversión personal con IA.\n\nEstoy conectado a Claude, GPT-4o y DeepSeek — cada agente usa el modelo que mejor se adapta a su tarea.\n\n${portfolio.length?`Conozco tu cartera (${portfolio.length} posiciones).`:'Puedo ayudarte a construir tu cartera.'}\n\n## ¿Cómo empezamos?\n- Cuéntame tu situación: capital disponible, horizonte y objetivo\n- O lanza cualquier pregunta directamente 👇`, provider:'anthropic' }],
-    macro:  [{ role:'assistant', content:`Soy **MACRO** — análisis macroeconómico en tiempo real con GPT-4o Search.\n\nBusco datos actualizados de tipos, inflación, ciclos y divisas antes de responderte.\n\n¿Qué quieres saber del panorama macro actual?`, provider:'openai' }],
-    riesgo: [{ role:'assistant', content:`Soy **RIESGO** — análisis cuantitativo profundo con DeepSeek R1.\n\nCalculo VaR, Sharpe, drawdown máximo y estrategias de cobertura con razonamiento matemático paso a paso.\n\n¿Quieres que analice tu cartera o un activo concreto?`, provider:'deepseek' }],
-    fiscal: [{ role:'assistant', content:`Soy **FISCAL** — tu asesor fiscal para inversiones en España, con Claude.\n\nDomino IRPF, plusvalías, la regla de los 2 meses, diferencias ETF vs fondo y optimización fiscal.\n\n¿En qué te puedo ayudar?`, provider:'anthropic' }],
+    aurum: [WELCOME.aurum], macro: [WELCOME.macro], riesgo: [WELCOME.riesgo], fiscal: [WELCOME.fiscal],
   });
-  const [apiHists, setApiHists] = useState<Record<AgentKey, ChatMessage[]>>({ aurum:[], macro:[], riesgo:[], fiscal:[] });
-  const [input, setInput]     = useState('');
-  const [loading, setLoading] = useState(false);
+  const [histLoaded, setHistLoaded] = useState(false);
+  const [input, setInput]       = useState('');
+  const [loading, setLoading]   = useState(false);
   const [searching, setSearching] = useState(false);
   const [activeRoute, setActiveRoute] = useState<RouteResult|null>(null);
-  const [file, setFile]       = useState<{ name:string; type:string; b64:string }|null>(null);
-  const [showMem, setShowMem] = useState(false);
+  const [file, setFile]         = useState<{ name:string; type:string; b64:string }|null>(null);
+  const [showMem, setShowMem]   = useState(false);
   const endRef  = useRef<HTMLDivElement>(null);
   const taRef   = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // Load persistent histories on mount
+  useEffect(() => {
+    Promise.all((['aurum','macro','riesgo','fiscal'] as AgentKey[]).map(async k => {
+      const saved = await sGet(HIST_KEY(k));
+      return [k, saved && saved.length > 0 ? saved : [WELCOME[k]]] as [AgentKey, DisplayMessage[]];
+    })).then(entries => {
+      setHistories(Object.fromEntries(entries) as Record<AgentKey, DisplayMessage[]>);
+      setHistLoaded(true);
+    });
+  }, []);
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior:'smooth' }); }, [histories, loading]);
 
@@ -231,27 +249,37 @@ function ChatTab({ profile, portfolio, userProfile }:{ profile:string; portfolio
     }
     setFile(null);
 
-    setHistories(h => ({ ...h, [agentKey]:[...h[agentKey], { role:'user', content:displayMsg }] }));
+    const userDisplayMsg:DisplayMessage = { role:'user', content:displayMsg };
+    const withUser = [...histories[agentKey], userDisplayMsg];
+    setHistories(h => ({ ...h, [agentKey]: withUser }));
     setLoading(true); setSearching(false); setActiveRoute(null);
 
-    const newApiHist:ChatMessage[] = [...apiHists[agentKey], { role:'user', content:apiContent }];
+    // Reconstruct API history from display messages (skip welcome, last 20 msgs)
+    const apiHist: ChatMessage[] = withUser
+      .filter((m,i) => !(i===0 && m.role==='assistant'))  // skip welcome
+      .slice(-20)
+      .map(m => ({ role: m.role as 'user'|'assistant', content: m.content }));
+    // Replace last user content with actual api content (may include image)
+    if (apiHist.length > 0) apiHist[apiHist.length-1] = { role:'user', content: apiContent };
 
+    let routeResult: RouteResult|null = null;
     try {
       const reply = await nexusChat(
-        agentKey,
-        newApiHist,
-        profile,
-        portfolio,
+        agentKey, apiHist, profile, portfolio,
         () => setSearching(true),
-        r  => setActiveRoute(r),
+        r  => { setActiveRoute(r); routeResult = r; },
         userProfile,
       );
-      const prov = activeRoute?.provider;
-      const mod  = activeRoute?.model;
-      setHistories(h => ({ ...h, [agentKey]:[...h[agentKey], { role:'assistant', content:reply, provider:prov, model:mod }] }));
-      setApiHists(a => ({ ...a, [agentKey]:[...newApiHist, { role:'assistant', content:reply }] }));
+      const assistantMsg: DisplayMessage = { role:'assistant', content:reply, provider:routeResult?.provider, model:routeResult?.model };
+      const finalHist = [...withUser, assistantMsg];
+      setHistories(h => ({ ...h, [agentKey]: finalHist }));
+      // Persist (cap at MAX_HIST messages)
+      sSet(HIST_KEY(agentKey), finalHist.slice(-MAX_HIST));
     } catch(e:any) {
-      setHistories(h => ({ ...h, [agentKey]:[...h[agentKey], { role:'assistant', content:`⚠️ **Error**: ${e.message}` }] }));
+      const errMsg: DisplayMessage = { role:'assistant', content:`⚠️ **Error**: ${e.message}` };
+      const finalHist = [...withUser, errMsg];
+      setHistories(h => ({ ...h, [agentKey]: finalHist }));
+      sSet(HIST_KEY(agentKey), finalHist.slice(-MAX_HIST));
     } finally { setLoading(false); setSearching(false); }
   };
 
@@ -276,6 +304,16 @@ function ChatTab({ profile, portfolio, userProfile }:{ profile:string; portfolio
           );
         })}
         <div style={{ flex:1 }} />
+        {/* Clear chat */}
+        <button onClick={() => {
+          const fresh = [WELCOME[agentKey]];
+          setHistories(h => ({ ...h, [agentKey]: fresh }));
+          sSet(HIST_KEY(agentKey), fresh);
+        }} title="Limpiar conversación"
+          style={{ display:'flex', alignItems:'center', padding:'0 8px', background:'transparent', border:'none', cursor:'pointer', fontSize:'.72em', color:C.faint }}
+          onMouseEnter={e=>(e.currentTarget.style.color=C.red)} onMouseLeave={e=>(e.currentTarget.style.color=C.faint)}>
+          🗑
+        </button>
         {/* Memory indicator */}
         <button onClick={() => setShowMem(v=>!v)} title="Memoria Nexus"
           style={{ display:'flex', alignItems:'center', gap:5, padding:'0 10px', background:'transparent', border:'none', cursor:'pointer', fontSize:'.65em', color:memCount>0?C.gold:C.faint }}>

@@ -2,7 +2,8 @@ import type { AgentKey, ChatMessage, Position, ResearchTask, RouteResult, UserMe
 import { callProvider } from './providers';
 import { routeAgent, routeTask } from './router';
 import { trimHistory } from './tokens';
-import { loadMemory, saveMemory, extractFacts, buildMemoryBlock } from './memory';
+import { loadMemory, saveMemory, extractFacts } from './memory';
+import { selectContext } from './context';
 import {
   buildAurumPrompt, buildMacroPrompt, buildRiesgoPrompt,
   buildFiscalPrompt, buildResearchPrompt, buildSynthesisPrompt,
@@ -25,21 +26,6 @@ export async function initNexus(): Promise<void> {
 
 export function getMemory(): UserMemory { return _memory; }
 
-// ── Dynamic system prompt builder ──────────────────────────────
-export function buildSystemPrompt(
-  agentKey: AgentKey,
-  profile: string,
-  portfolio: Position[],
-  user?: UserProfile,
-): string {
-  switch (agentKey) {
-    case 'aurum':  return buildAurumPrompt(profile, portfolio, _memory, user);
-    case 'macro':  return buildMacroPrompt(_memory, user);
-    case 'riesgo': return buildRiesgoPrompt(portfolio, _memory, user);
-    case 'fiscal': return buildFiscalPrompt(_memory, user);
-  }
-}
-
 // ── Main chat call ─────────────────────────────────────────────
 export async function nexusChat(
   agentKey: AgentKey,
@@ -50,22 +36,34 @@ export async function nexusChat(
   onRoute?: (r: RouteResult) => void,
   user?: UserProfile,
 ): Promise<string> {
-  const route   = routeAgent(agentKey);
-  const system  = buildSystemPrompt(agentKey, profile, portfolio, user);
-  const trimmed = trimHistory(messages);
-
+  const route = routeAgent(agentKey);
   if (onRoute) onRoute(route);
 
-  const text = await callProvider(route, trimmed, system, onSearch);
+  // Extract last user query for dynamic context selection
+  const lastMsg  = [...messages].reverse().find(m => m.role === 'user');
+  const query    = typeof lastMsg?.content === 'string' ? lastMsg.content : '';
+  const ctx      = selectContext(query, agentKey, portfolio, user ?? ({} as UserProfile), _memory);
 
-  // Async memory extraction every 5 interactions — never blocks response
+  // Build system prompt with only the relevant context
+  let system: string;
+  switch (agentKey) {
+    case 'aurum':  system = buildAurumPrompt(profile, ctx); break;
+    case 'macro':  system = buildMacroPrompt(ctx);          break;
+    case 'riesgo': system = buildRiesgoPrompt(ctx);         break;
+    case 'fiscal': system = buildFiscalPrompt(ctx);         break;
+  }
+
+  const trimmed = trimHistory(messages);
+  const text    = await callProvider(route, trimmed, system, onSearch);
+
+  // Async memory extraction every 5 interactions
   _memory.interactions++;
   if (_memory.interactions % 5 === 0) {
     extractFacts([...messages, { role: 'assistant', content: text }], _memory)
-      .then(updated => { _memory = updated; })
+      .then(updated => { _memory = updated; saveMemory(_memory); })
       .catch(() => {});
   } else {
-    await saveMemory(_memory);
+    saveMemory(_memory);
   }
 
   return text;

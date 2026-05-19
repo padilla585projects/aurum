@@ -1,5 +1,5 @@
 import type { Position, UserMemory, UserProfile } from './types';
-import { buildMemoryBlock } from './memory';
+import type { ContextSelection } from './context';
 
 export const PROFILES: Record<string, { label: string; emoji: string; color: string; alloc: string; sys: string }> = {
   conservador: {
@@ -30,11 +30,10 @@ export function buildUserBlock(up: UserProfile): string {
   if (up.country) lines.push(`País fiscal: ${up.country}`);
   if (up.notes)   lines.push(`Notas: ${up.notes}`);
   if (!lines.length) return '';
-  return `\n\n## Perfil\n${lines.join(' · ')}\nPersonaliza tus respuestas con estos datos.`;
+  return `\n\n## Perfil usuario\n${lines.join(' · ')}`;
 }
 
-function portfolioContext(portfolio: Position[]): string {
-  if (!portfolio.length) return '';
+function portfolioBlock(portfolio: Position[]): string {
   const total = portfolio.reduce((a, p) => a + p.shares * p.currentPrice, 0);
   const rows = portfolio.map(p => {
     const pnl = ((p.currentPrice - p.avgPrice) / p.avgPrice * 100).toFixed(1);
@@ -43,36 +42,44 @@ function portfolioContext(portfolio: Position[]): string {
   return `\n\n## Cartera\n${rows}\nTotal: ${total.toFixed(0)}€`;
 }
 
+function contextBlock(ctx: ContextSelection): string {
+  let out = '';
+  if (ctx.portfolio) out += portfolioBlock(ctx.portfolio);
+  if (ctx.user)      out += buildUserBlock(ctx.user);
+  if (ctx.facts.length) out += `\n\n## Contexto relevante\n${ctx.facts.map(f => `- ${f}`).join('\n')}`;
+  return out;
+}
+
 // ── Agent system prompts ────────────────────────────────────────
 
-export function buildAurumPrompt(profile: string, portfolio: Position[], memory: UserMemory, user?: UserProfile): string {
+export function buildAurumPrompt(profile: string, ctx: ContextSelection): string {
   const pf = PROFILES[profile];
   return `Eres AURUM, asesor de inversión CFA con 20 años de experiencia. Experto en RV, RF, ETFs, fondos indexados, cripto y alternativos. Mercados: IBEX35, Eurostoxx, S&P500, Nasdaq, MSCI World. Plataformas: DEGIRO, IBKR, MyInvestor, Indexa, Finizens, eToro.
 
 Perfil ${pf.label} ${pf.emoji}: ${pf.sys}
-Asignación: ${pf.alloc}${portfolioContext(portfolio)}${user ? buildUserBlock(user) : ''}${buildMemoryBlock(memory)}
+Asignación: ${pf.alloc}${contextBlock(ctx)}
 
 Tienes búsqueda web. Úsala SIEMPRE para precios, noticias y datos recientes.
 Responde en español. Sé directo: cifras, tickers ($VWCE), riesgos siempre. Sin garantías de rentabilidad.`;
 }
 
-export function buildMacroPrompt(memory: UserMemory, user?: UserProfile): string {
-  return `Eres MACRO, analista macroeconómico de AURUM. Especialidad: política monetaria (BCE/Fed/BoJ), tipos, inflación (IPC/PCE), ciclos económicos, divisas (EUR/USD, DXY), materias primas (oro, petróleo, cobre).${user ? buildUserBlock(user) : ''}${buildMemoryBlock(memory)}
+export function buildMacroPrompt(ctx: ContextSelection): string {
+  return `Eres MACRO, analista macroeconómico de AURUM. Especialidad: política monetaria (BCE/Fed/BoJ), tipos, inflación (IPC/PCE), ciclos económicos, divisas (EUR/USD, DXY), materias primas (oro, petróleo, cobre).${contextBlock(ctx)}
 
 Tienes búsqueda web. BUSCA SIEMPRE datos actualizados: tipos actuales, actas Fed/BCE, inflación y empleo reciente.
-Responde en español con rigor: cifras precisas, fechas, comparativas históricas. Conecta macro con implicaciones para la cartera.`;
+Responde en español con rigor: cifras precisas, fechas, comparativas históricas. Conecta macro con implicaciones de inversión.`;
 }
 
-export function buildRiesgoPrompt(portfolio: Position[], memory: UserMemory, user?: UserProfile): string {
-  return `Eres RIESGO, gestor de riesgos cuantitativo de AURUM. Especialidad: volatilidad (VIX, skew), drawdown, correlación, VaR 95/99%, CVaR, ratios Sharpe/Sortino/Calmar, coberturas (puts, collars, inversos), position sizing (Kelly, volatility targeting), riesgo divisa, concentración sectorial.${portfolioContext(portfolio)}${user ? buildUserBlock(user) : ''}${buildMemoryBlock(memory)}
+export function buildRiesgoPrompt(ctx: ContextSelection): string {
+  return `Eres RIESGO, gestor de riesgos cuantitativo de AURUM. Especialidad: volatilidad (VIX, skew), drawdown, correlación, VaR 95/99%, CVaR, ratios Sharpe/Sortino/Calmar, coberturas (puts, collars, inversos), position sizing (Kelly, volatility targeting), riesgo divisa, concentración sectorial.${contextBlock(ctx)}
 
 Sé brutalmente honesto. Razona paso a paso. Muestra cálculos. Responde en español con análisis cuantitativo y recomendaciones concretas.`;
 }
 
-export function buildFiscalPrompt(memory: UserMemory, user?: UserProfile): string {
-  return `Eres FISCAL, asesor fiscal de AURUM para inversiones en España. Dominio: IRPF ahorro (19/21/23/27/28%), plusvalías/minusvalías (compensación cruzada 4 años), retención 19% dividendos, regla anti-lavado (2 meses), fondos vs ETFs (traspaso sin tributar), timing ventas, modelo 720 (>50k€ exterior), cuentas omnibus.${user ? buildUserBlock(user) : ''}${buildMemoryBlock(memory)}
+export function buildFiscalPrompt(ctx: ContextSelection): string {
+  return `Eres FISCAL, asesor fiscal de AURUM para inversiones en España. Dominio: IRPF ahorro (19/21/23/27/28%), plusvalías/minusvalías (compensación cruzada 4 años), retención 19% dividendos, regla anti-lavado (2 meses), fondos vs ETFs (traspaso sin tributar), timing ventas, modelo 720 (>50k€ exterior), cuentas omnibus.${contextBlock(ctx)}
 
-Tienes búsqueda web para normativa (DGT/AEAT/BOE). Aclara siempre que no sustituyes a un asesor oficial. Responde en español con ejemplos numéricos y referencias normativas.`;
+Tienes búsqueda web para normativa (DGT/AEAT/BOE). Aclara que no sustituyes a un asesor oficial. Responde en español con ejemplos numéricos y referencias normativas.`;
 }
 
 // ── Research prompts ────────────────────────────────────────────
