@@ -5,9 +5,9 @@ import {
 } from 'recharts';
 import {
   initNexus, getMemory, nexusChat, nexusResearch, nexusPrices, nexusMarketBriefing,
-  classifyQuery, PROVIDER_META, PROFILES, EMPTY_PROFILE,
+  nexusInvestmentProposal, classifyQuery, PROVIDER_META, PROFILES, EMPTY_PROFILE,
 } from './nexus/index';
-import type { AgentKey, ChatMessage, DisplayMessage, Position, RouteResult, UserProfile } from './nexus/index';
+import type { AgentKey, ChatMessage, DisplayMessage, InvestmentProposal, Position, RouteResult, UserProfile } from './nexus/index';
 import { callAnthropic } from './nexus/providers';
 
 /* ══════════════════════════════════════════════════════════════
@@ -63,6 +63,7 @@ const PIE_PAL = [C.gold, C.blue, C.green, C.purple, '#e8734a','#1abc9c','#e74c3c
 const NAV = [
   { id:'chat',      icon:'💬', label:'Chat'      },
   { id:'portfolio', icon:'📁', label:'Cartera'   },
+  { id:'invest',    icon:'💰', label:'Invertir'  },
   { id:'research',  icon:'🔬', label:'Research'  },
   { id:'simulator', icon:'🧮', label:'Simulador' },
   { id:'settings',  icon:'⚙️', label:'Ajustes'   },
@@ -941,6 +942,230 @@ function SimulatorTab() {
 }
 
 /* ══════════════════════════════════════════════════════════════
+   INVEST TAB
+══════════════════════════════════════════════════════════════ */
+type InvestPhase = 'idle' | 'loading' | 'proposal' | 'executing' | 'done';
+
+function EstimateBar({ label, emoji, pct, capital, highlight }:{ label:string; emoji:string; pct:number; capital:number; highlight?:boolean }) {
+  const final = Math.round(capital * (1 + pct / 100));
+  const color  = pct >= 0 ? C.green : C.red;
+  return (
+    <div style={{ display:'flex', alignItems:'center', gap:12, padding:'10px 14px', background:highlight?`${C.gold}0c`:'transparent', borderRadius:9, border:`1px solid ${highlight?C.gold+'33':C.border}` }}>
+      <span style={{ fontSize:'1.1em', flexShrink:0 }}>{emoji}</span>
+      <div style={{ flex:1 }}>
+        <div style={{ fontSize:'.72em', color:C.muted, marginBottom:3 }}>{label}</div>
+        <div style={{ height:5, borderRadius:3, background:C.border, overflow:'hidden' }}>
+          <div style={{ height:'100%', width:`${Math.min(Math.abs(pct), 100)}%`, background:color, borderRadius:3, transition:'width .6s ease' }}/>
+        </div>
+      </div>
+      <div style={{ textAlign:'right', flexShrink:0 }}>
+        <div style={{ fontSize:'.88em', fontWeight:600, color, fontFamily:"'DM Mono',monospace" }}>{pct >= 0 ? '+' : ''}{pct}%</div>
+        <div style={{ fontSize:'.7em', color:C.muted, fontFamily:"'DM Mono',monospace" }}>{final.toLocaleString('es-ES')}€</div>
+      </div>
+    </div>
+  );
+}
+
+function TradeRow({ trade }:{ trade: import('./nexus/advisor').TradeItem }) {
+  return (
+    <div style={{ display:'grid', gridTemplateColumns:'64px 1fr auto', gap:10, padding:'12px 16px', borderBottom:`1px solid ${C.border}22`, alignItems:'center' }}>
+      <div>
+        <div style={{ fontSize:'.82em', fontWeight:700, color:C.gold, fontFamily:"'DM Mono',monospace" }}>{trade.ticker}</div>
+        <div style={{ fontSize:'.58em', color:C.faint, fontFamily:"'DM Mono',monospace", marginTop:1 }}>{trade.isin}</div>
+      </div>
+      <div>
+        <div style={{ fontSize:'.8em', color:C.text }}>{trade.name}</div>
+        <div style={{ fontSize:'.68em', color:C.muted, marginTop:2 }}>◆ {trade.reason}</div>
+      </div>
+      <div style={{ fontSize:'1em', fontWeight:700, color:C.goldL, fontFamily:"'DM Mono',monospace", textAlign:'right', flexShrink:0 }}>
+        {trade.amount.toLocaleString('es-ES')}€
+      </div>
+    </div>
+  );
+}
+
+function InvestTab({ profile, portfolio, setPortfolio, userProfile }:{
+  profile: string;
+  portfolio: Position[];
+  setPortfolio: (p: Position[]) => void;
+  userProfile: UserProfile;
+}) {
+  const [capital,  setCapital]  = useState('');
+  const [phase,    setPhase]    = useState<InvestPhase>('idle');
+  const [proposal, setProposal] = useState<InvestmentProposal | null>(null);
+  const [error,    setError]    = useState('');
+
+  const analyze = async () => {
+    const amount = parseFloat(capital.replace(',', '.'));
+    if (!amount || amount < 10) return;
+    setPhase('loading'); setProposal(null); setError('');
+    try {
+      const result = await nexusInvestmentProposal(amount, portfolio, profile, userProfile);
+      setProposal(result);
+      setPhase('proposal');
+    } catch(e:any) {
+      setError(e.message || 'Error al generar el plan.');
+      setPhase('idle');
+    }
+  };
+
+  const confirm = async () => {
+    if (!proposal) return;
+    setPhase('executing');
+    // Phase 1: añadir a cartera con precio estimado (sin backend aún)
+    const newPositions: Position[] = proposal.trades.map((t, i) => ({
+      id: Date.now() + i,
+      ticker: t.ticker,
+      name:   t.name,
+      shares: 1,          // placeholder hasta tener precios reales
+      avgPrice: t.amount, // usamos el importe como proxy
+      currentPrice: t.amount,
+    }));
+    const updated = [...portfolio, ...newPositions];
+    setPortfolio(updated);
+    await sSet('aurum-portfolio', updated);
+    setPhase('done');
+  };
+
+  const reset = () => { setPhase('idle'); setProposal(null); setCapital(''); setError(''); };
+
+  const pf = PROFILES[profile];
+
+  return (
+    <div style={{ height:'100%', overflow:'auto', padding:'24px 28px', display:'flex', flexDirection:'column', alignItems:'center' }}>
+      <div style={{ width:'100%', maxWidth:640, display:'flex', flexDirection:'column', gap:20 }}>
+
+        {/* Header */}
+        <div>
+          <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.5em', fontWeight:600, color:C.goldL, marginBottom:4 }}>Invertir con AURUM</div>
+          <div style={{ fontSize:'.78em', color:C.muted }}>AURUM analiza el mercado, propone el plan y lo ejecuta. Tú solo dices <strong style={{ color:C.text }}>Sí</strong>.</div>
+        </div>
+
+        {/* Input */}
+        {(phase === 'idle' || phase === 'loading') && (
+          <Card style={{ padding:'24px' }}>
+            <div style={{ fontSize:'.65em', letterSpacing:'2px', color:C.muted, textTransform:'uppercase', marginBottom:14 }}>Capital a invertir</div>
+            <div style={{ display:'flex', gap:10, alignItems:'center', marginBottom:14 }}>
+              <div style={{ position:'relative', flex:1 }}>
+                <input
+                  type="number" min={10} value={capital}
+                  onChange={e => setCapital(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && analyze()}
+                  placeholder="500"
+                  style={{ ...inputBase, fontSize:'1.6em', padding:'12px 44px 12px 16px', fontFamily:"'DM Mono',monospace", textAlign:'right' }}
+                />
+                <span style={{ position:'absolute', right:14, top:'50%', transform:'translateY(-50%)', fontSize:'1.1em', color:C.muted, fontFamily:"'DM Mono',monospace" }}>€</span>
+              </div>
+              <button onClick={analyze} disabled={phase === 'loading' || !capital}
+                style={{ padding:'12px 22px', background:capital&&phase!=='loading'?C.gold:'#1a1a28', border:'none', borderRadius:11, color:capital&&phase!=='loading'?'#07070e':C.muted, fontWeight:700, cursor:'pointer', fontSize:'.9em', fontFamily:"'Sora',sans-serif", flexShrink:0, display:'flex', alignItems:'center', gap:8, transition:'all .18s' }}>
+                {phase === 'loading' ? <><Spinner/>Analizando…</> : 'Analizar →'}
+              </button>
+            </div>
+            {phase === 'loading' && (
+              <div style={{ display:'flex', flexDirection:'column', gap:8, padding:'14px', background:'#07070e', borderRadius:9, border:`1px solid ${C.border}` }}>
+                <div style={{ display:'flex', alignItems:'center', gap:8, fontSize:'.75em', color:C.gold }}><Spinner/>Buscando estado del mercado…</div>
+                <div style={{ fontSize:'.68em', color:C.muted }}>AURUM consulta mercados en tiempo real y calcula la asignación óptima para tu perfil {pf.emoji} {pf.label}.</div>
+              </div>
+            )}
+            {error && <div style={{ color:C.red, fontSize:'.75em', padding:'10px 14px', background:'#2a0a0a', borderRadius:8, border:`1px solid ${C.red}33`, marginTop:8 }}>{error}</div>}
+            <div style={{ marginTop:14, fontSize:'.68em', color:C.faint }}>
+              Perfil activo: {pf.emoji} <span style={{ color:pf.color }}>{pf.label}</span> · {pf.alloc}
+            </div>
+          </Card>
+        )}
+
+        {/* Proposal */}
+        {proposal && (phase === 'proposal' || phase === 'executing' || phase === 'done') && (
+          <>
+            {/* Market context */}
+            <div style={{ display:'flex', alignItems:'center', gap:8, padding:'10px 14px', background:`${C.blue}0c`, border:`1px solid ${C.blue}33`, borderRadius:9, fontSize:'.75em', color:C.text }}>
+              <span style={{ fontSize:'1em', flexShrink:0 }}>🌐</span>
+              <span>{proposal.marketContext}</span>
+            </div>
+
+            {/* Trades */}
+            <Card>
+              <div style={{ padding:'14px 16px', borderBottom:`1px solid ${C.border}`, display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+                <div>
+                  <div style={{ fontSize:'.88em', fontWeight:600, color:C.goldL }}>Plan de inversión · {proposal.totalAmount.toLocaleString('es-ES')}€</div>
+                  <div style={{ fontSize:'.65em', color:C.muted, marginTop:2 }}>{proposal.trades.length} instrumentos · {new Date(proposal.generatedAt).toLocaleTimeString('es-ES', { hour:'2-digit', minute:'2-digit' })}</div>
+                </div>
+                <ProviderBadge provider="anthropic" model="claude-sonnet-4-6" />
+              </div>
+              {proposal.trades.map((t, i) => <TradeRow key={i} trade={t} />)}
+              <div style={{ padding:'12px 16px', background:'#07070e', borderTop:`1px solid ${C.border}` }}>
+                <div style={{ fontSize:'.72em', color:C.muted, lineHeight:1.6 }}>
+                  <span style={{ color:C.gold }}>◈ </span>{proposal.rationale}
+                </div>
+              </div>
+            </Card>
+
+            {/* Estimates */}
+            <Card style={{ padding:'16px' }}>
+              <div style={{ fontSize:'.65em', letterSpacing:'2px', color:C.muted, textTransform:'uppercase', marginBottom:12 }}>
+                Estimación a {proposal.estimates.horizon} años
+              </div>
+              <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+                <EstimateBar label="Escenario optimista"  emoji="🚀" pct={proposal.estimates.optimistic}  capital={proposal.totalAmount} />
+                <EstimateBar label="Escenario base"       emoji="⚖️" pct={proposal.estimates.base}        capital={proposal.totalAmount} highlight />
+                <EstimateBar label="Escenario pesimista"  emoji="🛡️" pct={proposal.estimates.pessimistic} capital={proposal.totalAmount} />
+              </div>
+              <div style={{ marginTop:10, fontSize:'.62em', color:C.faint }}>⚠️ Estimaciones orientativas basadas en histórico. No garantizan rentabilidad futura.</div>
+            </Card>
+
+            {/* Actions */}
+            {phase === 'proposal' && (
+              <div style={{ display:'flex', gap:10 }}>
+                <button onClick={confirm}
+                  style={{ flex:1, padding:'14px', background:C.gold, border:'none', borderRadius:12, color:'#07070e', fontWeight:700, cursor:'pointer', fontSize:'1em', fontFamily:"'Sora',sans-serif", display:'flex', alignItems:'center', justifyContent:'center', gap:8 }}>
+                  ✓ Sí, ejecutar
+                </button>
+                <button onClick={reset}
+                  style={{ padding:'14px 20px', background:'transparent', border:`1px solid ${C.border2}`, borderRadius:12, color:C.muted, cursor:'pointer', fontSize:'.88em', fontFamily:"'Sora',sans-serif" }}>
+                  Cancelar
+                </button>
+              </div>
+            )}
+
+            {phase === 'executing' && (
+              <div style={{ display:'flex', alignItems:'center', gap:10, padding:'16px', background:`${C.gold}08`, border:`1px solid ${C.gold}33`, borderRadius:12 }}>
+                <Spinner /><span style={{ fontSize:'.82em', color:C.gold }}>Procesando órdenes…</span>
+              </div>
+            )}
+
+            {phase === 'done' && (
+              <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
+                <div style={{ padding:'16px 20px', background:`${C.green}0c`, border:`1px solid ${C.green}44`, borderRadius:12 }}>
+                  <div style={{ fontSize:'.88em', fontWeight:600, color:C.green, marginBottom:8 }}>✓ Plan registrado en cartera</div>
+                  <div style={{ fontSize:'.72em', color:C.muted, lineHeight:1.7 }}>
+                    Las posiciones se han añadido a tu cartera. Para ejecutarlas en <strong style={{ color:C.text }}>Trade Republic</strong>:
+                  </div>
+                  <div style={{ marginTop:10, display:'flex', flexDirection:'column', gap:6 }}>
+                    {proposal.trades.map((t, i) => (
+                      <div key={i} style={{ fontSize:'.72em', color:C.text, display:'flex', gap:8 }}>
+                        <span style={{ color:C.gold, flexShrink:0 }}>{i + 1}.</span>
+                        <span>Busca <strong style={{ fontFamily:"'DM Mono',monospace", color:C.gold }}>{t.ticker}</strong> → Comprar → <strong>{t.amount}€</strong> → Confirmar</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ marginTop:10, fontSize:'.65em', color:C.faint }}>
+                    Próximamente: ejecución automática vía backend en tu Proxmox.
+                  </div>
+                </div>
+                <button onClick={reset}
+                  style={{ padding:'11px', background:`${C.gold}18`, border:`1px solid ${C.gold}44`, borderRadius:10, color:C.gold, cursor:'pointer', fontSize:'.82em', fontFamily:"'Sora',sans-serif" }}>
+                  Nueva inversión
+                </button>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════
    SETTINGS TAB
 ══════════════════════════════════════════════════════════════ */
 function SettingsTab({ profile, setProfile, userProfile, setUserProfile }:{
@@ -1131,6 +1356,7 @@ export default function App() {
         <div style={{ flex:1, overflow:'hidden', position:'relative' }}>
           {tab==='chat'      && <ChatTab profile={profile} portfolio={portfolio} userProfile={userProfile} />}
           {tab==='portfolio' && <PortfolioTab portfolio={portfolio} setPortfolio={setPortfolio} />}
+          {tab==='invest'    && <InvestTab profile={profile} portfolio={portfolio} setPortfolio={setPortfolio} userProfile={userProfile} />}
           {tab==='research'  && <ResearchTab />}
           {tab==='simulator' && <SimulatorTab />}
           {tab==='settings'  && <SettingsTab profile={profile} setProfile={setProfile} userProfile={userProfile} setUserProfile={setUserProfile} />}

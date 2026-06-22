@@ -15,6 +15,8 @@ export { PROVIDER_META, EMPTY_PROFILE } from './types';
 export { PROFILES } from './prompts';
 export { clearMemory } from './memory';
 export { classifyQuery } from './router';
+export { nexusInvestmentProposal } from './advisor';
+export type { InvestmentProposal, TradeItem } from './advisor';
 
 // ── Singleton memory state ──────────────────────────────────────────────────
 let _memory: UserMemory = { facts: [], interactions: 0, lastUpdated: 0 };
