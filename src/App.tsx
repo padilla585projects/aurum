@@ -90,6 +90,28 @@ const RESEARCH_STEPS: { label:string; task:string; q:(a:string)=>string }[] = [
 const sGet = async (k:string) => { try { const v=localStorage.getItem(k); return v?JSON.parse(v):null; } catch { return null; } };
 const sSet = async (k:string, v:unknown) => { try { localStorage.setItem(k,JSON.stringify(v)); } catch {} };
 
+/* ── Backend helpers ──────────────────────────────────────────── */
+interface BackendConfig { url: string; apiKey: string; }
+
+async function backendCall(cfg: BackendConfig, path: string, method='GET', body?: unknown) {
+  const res = await fetch(`${cfg.url.replace(/\/$/, '')}${path}`, {
+    method,
+    headers: { 'Content-Type':'application/json', 'X-AURUM-KEY': cfg.apiKey },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`${res.status}: ${err}`);
+  }
+  return res.json();
+}
+
+async function getBackendConfig(): Promise<BackendConfig|null> {
+  const cfg = await sGet('aurum-backend-config');
+  if (!cfg?.url || !cfg?.apiKey) return null;
+  return cfg;
+}
+
 /* ══════════════════════════════════════════════════════════════
    SHARED COMPONENTS
 ══════════════════════════════════════════════════════════════ */
@@ -990,10 +1012,15 @@ function InvestTab({ profile, portfolio, setPortfolio, userProfile }:{
   setPortfolio: (p: Position[]) => void;
   userProfile: UserProfile;
 }) {
-  const [capital,  setCapital]  = useState('');
-  const [phase,    setPhase]    = useState<InvestPhase>('idle');
-  const [proposal, setProposal] = useState<InvestmentProposal | null>(null);
-  const [error,    setError]    = useState('');
+  const [capital,    setCapital]    = useState('');
+  const [phase,      setPhase]      = useState<InvestPhase>('idle');
+  const [proposal,   setProposal]   = useState<InvestmentProposal | null>(null);
+  const [error,      setError]      = useState('');
+  const [tradeLog,   setTradeLog]   = useState<{ ticker:string; status:'pending'|'ok'|'error'; msg?:string }[]>([]);
+  const [backendCfg, setBackendCfg] = useState<BackendConfig|null>(null);
+
+  // Cargar config del backend al montar
+  useState(() => { getBackendConfig().then(setBackendCfg); });
 
   const analyze = async () => {
     const amount = parseFloat(capital.replace(',', '.'));
@@ -1012,22 +1039,39 @@ function InvestTab({ profile, portfolio, setPortfolio, userProfile }:{
   const confirm = async () => {
     if (!proposal) return;
     setPhase('executing');
-    // Phase 1: añadir a cartera con precio estimado (sin backend aún)
-    const newPositions: Position[] = proposal.trades.map((t, i) => ({
-      id: Date.now() + i,
-      ticker: t.ticker,
-      name:   t.name,
-      shares: 1,          // placeholder hasta tener precios reales
-      avgPrice: t.amount, // usamos el importe como proxy
-      currentPrice: t.amount,
-    }));
-    const updated = [...portfolio, ...newPositions];
-    setPortfolio(updated);
-    await sSet('aurum-portfolio', updated);
+    const cfg = await getBackendConfig();
+
+    if (cfg) {
+      // ── Ejecución real vía backend Proxmox ──────────────────────
+      const log = proposal.trades.map(t => ({ ticker: t.ticker, status: 'pending' as const }));
+      setTradeLog(log);
+      try {
+        const result = await backendCall(cfg, '/invest', 'POST', { trades: proposal.trades });
+        const updatedLog = (result.results as any[]).map(r => ({
+          ticker: r.ticker,
+          status: r.status === 'executed' ? 'ok' as const : 'error' as const,
+          msg:    r.status === 'error' ? r.error : `Orden ${r.orderId || 'procesada'}`,
+        }));
+        setTradeLog(updatedLog);
+      } catch(e:any) {
+        setTradeLog(log.map(l => ({ ...l, status: 'error' as const, msg: e.message })));
+      }
+    } else {
+      // ── Sin backend: registro local + guía manual ────────────────
+      const newPositions: Position[] = proposal.trades.map((t, i) => ({
+        id: Date.now() + i,
+        ticker: t.ticker, name: t.name,
+        shares: 1, avgPrice: t.amount, currentPrice: t.amount,
+      }));
+      const updated = [...portfolio, ...newPositions];
+      setPortfolio(updated);
+      await sSet('aurum-portfolio', updated);
+      setTradeLog(proposal.trades.map(t => ({ ticker: t.ticker, status: 'pending' as const })));
+    }
     setPhase('done');
   };
 
-  const reset = () => { setPhase('idle'); setProposal(null); setCapital(''); setError(''); };
+  const reset = () => { setPhase('idle'); setProposal(null); setCapital(''); setError(''); setTradeLog([]); };
 
   const pf = PROFILES[profile];
 
@@ -1128,30 +1172,49 @@ function InvestTab({ profile, portfolio, setPortfolio, userProfile }:{
             )}
 
             {phase === 'executing' && (
-              <div style={{ display:'flex', alignItems:'center', gap:10, padding:'16px', background:`${C.gold}08`, border:`1px solid ${C.gold}33`, borderRadius:12 }}>
-                <Spinner /><span style={{ fontSize:'.82em', color:C.gold }}>Procesando órdenes…</span>
+              <div style={{ display:'flex', flexDirection:'column', gap:8, padding:'16px', background:`${C.gold}08`, border:`1px solid ${C.gold}33`, borderRadius:12 }}>
+                <div style={{ display:'flex', alignItems:'center', gap:8 }}><Spinner /><span style={{ fontSize:'.82em', color:C.gold }}>Ejecutando en Trade Republic…</span></div>
+                {proposal?.trades.map((t,i) => (
+                  <div key={i} style={{ fontSize:'.72em', color:C.muted, display:'flex', gap:8, alignItems:'center' }}>
+                    <Spinner /><span>{t.ticker} · {t.amount}€</span>
+                  </div>
+                ))}
               </div>
             )}
 
-            {phase === 'done' && (
+            {phase === 'done' && proposal && (
               <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
-                <div style={{ padding:'16px 20px', background:`${C.green}0c`, border:`1px solid ${C.green}44`, borderRadius:12 }}>
-                  <div style={{ fontSize:'.88em', fontWeight:600, color:C.green, marginBottom:8 }}>✓ Plan registrado en cartera</div>
-                  <div style={{ fontSize:'.72em', color:C.muted, lineHeight:1.7 }}>
-                    Las posiciones se han añadido a tu cartera. Para ejecutarlas en <strong style={{ color:C.text }}>Trade Republic</strong>:
-                  </div>
-                  <div style={{ marginTop:10, display:'flex', flexDirection:'column', gap:6 }}>
-                    {proposal.trades.map((t, i) => (
-                      <div key={i} style={{ fontSize:'.72em', color:C.text, display:'flex', gap:8 }}>
-                        <span style={{ color:C.gold, flexShrink:0 }}>{i + 1}.</span>
-                        <span>Busca <strong style={{ fontFamily:"'DM Mono',monospace", color:C.gold }}>{t.ticker}</strong> → Comprar → <strong>{t.amount}€</strong> → Confirmar</span>
+                {backendCfg ? (
+                  /* ── Resultados reales del backend ── */
+                  <div style={{ padding:'16px 20px', background:`${C.green}0c`, border:`1px solid ${C.green}44`, borderRadius:12 }}>
+                    <div style={{ fontSize:'.88em', fontWeight:600, color:C.green, marginBottom:12 }}>
+                      ✓ Órdenes enviadas a Trade Republic
+                    </div>
+                    {tradeLog.map((r, i) => (
+                      <div key={i} style={{ display:'flex', alignItems:'center', gap:10, padding:'7px 0', borderBottom:`1px solid ${C.border}22`, fontSize:'.78em' }}>
+                        <span style={{ fontSize:'1em' }}>{r.status==='ok'?'✅':r.status==='error'?'❌':'⏳'}</span>
+                        <span style={{ color:C.gold, fontFamily:"'DM Mono',monospace", fontWeight:600 }}>{r.ticker}</span>
+                        <span style={{ color:r.status==='error'?C.red:C.muted, flex:1 }}>{r.msg || (r.status==='ok'?'ejecutada':'pendiente')}</span>
                       </div>
                     ))}
                   </div>
-                  <div style={{ marginTop:10, fontSize:'.65em', color:C.faint }}>
-                    Próximamente: ejecución automática vía backend en tu Proxmox.
+                ) : (
+                  /* ── Sin backend: guía manual ── */
+                  <div style={{ padding:'16px 20px', background:`${C.blue}0c`, border:`1px solid ${C.blue}33`, borderRadius:12 }}>
+                    <div style={{ fontSize:'.88em', fontWeight:600, color:C.blue, marginBottom:8 }}>Plan listo — ejecútalo en Trade Republic</div>
+                    <div style={{ display:'flex', flexDirection:'column', gap:7, marginTop:6 }}>
+                      {proposal.trades.map((t, i) => (
+                        <div key={i} style={{ fontSize:'.75em', color:C.text, display:'flex', gap:8 }}>
+                          <span style={{ color:C.gold, flexShrink:0, fontWeight:700 }}>{i+1}.</span>
+                          <span>Busca <strong style={{ fontFamily:"'DM Mono',monospace", color:C.gold }}>{t.ticker}</strong> → Comprar → <strong>{t.amount}€</strong> → Confirmar</span>
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{ marginTop:12, fontSize:'.65em', color:C.faint, padding:'8px 10px', background:'#0a0a14', borderRadius:7 }}>
+                      💡 Conecta el backend de Proxmox en Ajustes para que AURUM lo ejecute automáticamente.
+                    </div>
                   </div>
-                </div>
+                )}
                 <button onClick={reset}
                   style={{ padding:'11px', background:`${C.gold}18`, border:`1px solid ${C.gold}44`, borderRadius:10, color:C.gold, cursor:'pointer', fontSize:'.82em', fontFamily:"'Sora',sans-serif" }}>
                   Nueva inversión
@@ -1168,6 +1231,124 @@ function InvestTab({ profile, portfolio, setPortfolio, userProfile }:{
 /* ══════════════════════════════════════════════════════════════
    SETTINGS TAB
 ══════════════════════════════════════════════════════════════ */
+function BackendSection() {
+  const [url,        setUrl]        = useState('');
+  const [apiKey,     setApiKey]     = useState('');
+  const [status,     setStatus]     = useState<'idle'|'ok'|'error'>('idle');
+  const [statusMsg,  setStatusMsg]  = useState('');
+  const [trPhone,    setTrPhone]    = useState('');
+  const [trPin,      setTrPin]      = useState('');
+  const [trOtp,      setTrOtp]      = useState('');
+  const [authPhase,  setAuthPhase]  = useState<'idle'|'otp'|'done'>('idle');
+  const [authMsg,    setAuthMsg]    = useState('');
+  const fs: React.CSSProperties    = { ...inputBase, padding:'8px 12px' };
+
+  useState(() => {
+    sGet('aurum-backend-config').then((cfg:any) => {
+      if (cfg?.url)    setUrl(cfg.url);
+      if (cfg?.apiKey) setApiKey(cfg.apiKey);
+    });
+  });
+
+  const testConnection = async () => {
+    setStatus('idle'); setStatusMsg('Conectando…');
+    try {
+      const res = await backendCall({ url, apiKey }, '/health');
+      if (res.status === 'ok') {
+        setStatus('ok');
+        setStatusMsg(res.tr_authenticated ? '✓ Conectado · TR autenticado' : '✓ Conectado · TR no autenticado aún');
+        await sSet('aurum-backend-config', { url, apiKey });
+      } else {
+        setStatus('error'); setStatusMsg('Respuesta inesperada');
+      }
+    } catch(e:any) {
+      setStatus('error'); setStatusMsg(e.message);
+    }
+  };
+
+  const sendOtp = async () => {
+    setAuthMsg('Enviando…');
+    try {
+      await backendCall({ url, apiKey }, '/auth/init', 'POST', { phone: trPhone, pin: trPin });
+      setAuthPhase('otp'); setAuthMsg('OTP enviado a tu teléfono TR →');
+    } catch(e:any) { setAuthMsg(`Error: ${e.message}`); }
+  };
+
+  const verifyOtp = async () => {
+    setAuthMsg('Verificando…');
+    try {
+      await backendCall({ url, apiKey }, '/auth/verify', 'POST', { otp: trOtp });
+      setAuthPhase('done'); setAuthMsg('✓ Trade Republic autenticado. AURUM puede ejecutar órdenes.');
+    } catch(e:any) { setAuthMsg(`Error: ${e.message}`); }
+  };
+
+  const statusColor = status === 'ok' ? C.green : status === 'error' ? C.red : C.muted;
+
+  return (
+    <div>
+      <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.18em', fontWeight:600, color:C.goldL, marginBottom:4 }}>Backend Proxmox</div>
+      <div style={{ fontSize:'.74em', color:C.muted, marginBottom:14 }}>Conecta el servidor local para ejecución automática de órdenes en Trade Republic.</div>
+      <div style={{ background:C.surf2, border:`1px solid ${C.border}`, borderRadius:13, padding:'18px 20px', display:'flex', flexDirection:'column', gap:14 }}>
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+          <div>
+            <div style={{ fontSize:'.65em', color:C.muted, marginBottom:5 }}>Backend URL (Tailscale)</div>
+            <input value={url} onChange={e=>setUrl(e.target.value)} placeholder="http://100.x.x.x:8000" style={fs} />
+          </div>
+          <div>
+            <div style={{ fontSize:'.65em', color:C.muted, marginBottom:5 }}>API Key (AURUM_API_KEY)</div>
+            <input value={apiKey} onChange={e=>setApiKey(e.target.value)} type="password" placeholder="••••••••••••••••" style={fs} />
+          </div>
+        </div>
+        <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+          <button onClick={testConnection} style={{ background:`${C.blue}18`, border:`1px solid ${C.blue}44`, borderRadius:8, padding:'7px 16px', color:C.blue, cursor:'pointer', fontSize:'.78em', fontFamily:"'Sora',sans-serif" }}>
+            Probar conexión
+          </button>
+          {statusMsg && <span style={{ fontSize:'.72em', color:statusColor }}>{statusMsg}</span>}
+        </div>
+
+        {/* TR Auth */}
+        {status === 'ok' && authPhase !== 'done' && (
+          <div style={{ borderTop:`1px solid ${C.border}`, paddingTop:14 }}>
+            <div style={{ fontSize:'.68em', color:C.muted, marginBottom:10, letterSpacing:'1px', textTransform:'uppercase' }}>Autenticar Trade Republic</div>
+            {authPhase === 'idle' && (
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr auto', gap:8, alignItems:'end' }}>
+                <div>
+                  <div style={{ fontSize:'.6em', color:C.muted, marginBottom:4 }}>Teléfono TR</div>
+                  <input value={trPhone} onChange={e=>setTrPhone(e.target.value)} placeholder="+34612345678" style={{ ...fs, padding:'7px 10px' }} />
+                </div>
+                <div>
+                  <div style={{ fontSize:'.6em', color:C.muted, marginBottom:4 }}>PIN TR</div>
+                  <input value={trPin} onChange={e=>setTrPin(e.target.value)} type="password" placeholder="••••" style={{ ...fs, padding:'7px 10px' }} />
+                </div>
+                <button onClick={sendOtp} style={{ background:C.gold, border:'none', borderRadius:8, padding:'7px 14px', color:'#07070e', fontWeight:600, cursor:'pointer', fontSize:'.78em', fontFamily:"'Sora',sans-serif", whiteSpace:'nowrap' }}>
+                  Enviar OTP →
+                </button>
+              </div>
+            )}
+            {authPhase === 'otp' && (
+              <div style={{ display:'grid', gridTemplateColumns:'1fr auto', gap:8, alignItems:'end' }}>
+                <div>
+                  <div style={{ fontSize:'.6em', color:C.muted, marginBottom:4 }}>Código OTP recibido en tu móvil</div>
+                  <input value={trOtp} onChange={e=>setTrOtp(e.target.value)} placeholder="1234" maxLength={6} style={{ ...fs, padding:'7px 10px', letterSpacing:'4px', fontFamily:"'DM Mono',monospace" }} />
+                </div>
+                <button onClick={verifyOtp} style={{ background:C.green, border:'none', borderRadius:8, padding:'7px 16px', color:'#07070e', fontWeight:600, cursor:'pointer', fontSize:'.78em', fontFamily:"'Sora',sans-serif" }}>
+                  Verificar ✓
+                </button>
+              </div>
+            )}
+            {authMsg && <div style={{ fontSize:'.7em', color:C.muted, marginTop:8 }}>{authMsg}</div>}
+          </div>
+        )}
+        {authPhase === 'done' && (
+          <div style={{ fontSize:'.72em', color:C.green, padding:'8px 12px', background:`${C.green}0c`, borderRadius:8, border:`1px solid ${C.green}33` }}>
+            ✓ {authMsg}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function SettingsTab({ profile, setProfile, userProfile, setUserProfile }:{
   profile: string;
   setProfile: (p:string)=>void;
@@ -1277,6 +1458,9 @@ function SettingsTab({ profile, setProfile, userProfile, setUserProfile }:{
             })}
           </div>
         </div>
+
+        {/* Backend Proxmox */}
+        <BackendSection />
 
       </div>
     </div>
