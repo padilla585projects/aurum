@@ -5,7 +5,8 @@ const config: CapacitorConfig = {
   appName: 'AURUM',
   webDir: 'dist',
   server: {
-    androidScheme: 'https'
+    androidScheme: 'https',
+    url: 'https://aurum-7cm.pages.dev',
   }
 };
 

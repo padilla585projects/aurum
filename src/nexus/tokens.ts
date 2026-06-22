@@ -29,10 +29,9 @@ export function trimHistory(messages: ChatMessage[]): ChatMessage[] {
     })
     .join('|');
 
-  const summaryMsg: ChatMessage = {
-    role: 'user',
-    content: `[Historial anterior comprimido(${older.length} msgs):${summary}]`,
-  };
-
-  return [summaryMsg, ...recent];
+  return [
+    { role: 'user',      content: `[resumen de ${older.length} mensajes anteriores de esta conversación]` },
+    { role: 'assistant', content: `[Entendido. Contexto previo: ${summary}]` },
+    ...recent,
+  ];
 }

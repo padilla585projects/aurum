@@ -57,13 +57,13 @@ export async function extractFacts(
     const merged = [...new Set([...existing.facts, ...newFacts])].slice(-12);
     const updated: UserMemory = {
       facts: merged,
-      interactions: existing.interactions + 1,
+      interactions: existing.interactions,
       lastUpdated: Date.now(),
     };
     await saveMemory(updated);
     return updated;
   } catch {
-    return { ...existing, interactions: existing.interactions + 1 };
+    return existing;
   }
 }
 

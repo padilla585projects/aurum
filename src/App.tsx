@@ -4,7 +4,7 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Legend,
 } from 'recharts';
 import {
-  initNexus, getMemory, nexusChat, nexusResearch, nexusPrices,
+  initNexus, getMemory, nexusChat, nexusResearch, nexusPrices, nexusMarketBriefing,
   classifyQuery, PROVIDER_META, PROFILES, EMPTY_PROFILE,
 } from './nexus/index';
 import type { AgentKey, ChatMessage, DisplayMessage, Position, RouteResult, UserProfile } from './nexus/index';
@@ -196,7 +196,7 @@ const WELCOME_AUTO: DisplayMessage = {
 };
 
 function ChatTab({ profile, portfolio, userProfile }:{ profile:string; portfolio:Position[]; userProfile:UserProfile }) {
-  const [history, setHistory]     = useState<DisplayMessage[]>([WELCOME_AUTO]);
+  const [history, setHistory]     = useState<DisplayMessage[]>([]);
   const [histLoaded, setHistLoaded] = useState(false);
   const [input, setInput]         = useState('');
   const [loading, setLoading]     = useState(false);
@@ -320,7 +320,12 @@ function ChatTab({ profile, portfolio, userProfile }:{ profile:string; portfolio
 
       {/* Messages */}
       <div style={{ flex:1, overflow:'auto', padding:'18px 22px' }}>
-        {history.map((m,i) => {
+        {!histLoaded && (
+          <div style={{ display:'flex', justifyContent:'center', alignItems:'center', height:120 }}>
+            <Dots color={C.faint} />
+          </div>
+        )}
+        {histLoaded && history.map((m,i) => {
           const isUser = m.role === 'user';
           const msgAgent = AGENTS[m.agent || 'aurum'];
           return (
@@ -405,7 +410,7 @@ async function parsePortfolioWithAI(
   const raw = await callAnthropic(
     [{ role:'user', content }],
     IMPORT_SYSTEM,
-    'claude-sonnet-4-5',
+    'claude-sonnet-4-6',
   );
   const json = raw.replace(/```[a-z]*\n?|```/g, '').trim();
   const parsed = JSON.parse(json) as any[];
@@ -699,11 +704,24 @@ function PortfolioTab({ portfolio, setPortfolio }:{ portfolio:Position[]; setPor
    RESEARCH TAB
 ══════════════════════════════════════════════════════════════ */
 function ResearchTab() {
-  const [asset,   setAsset]   = useState('');
-  const [running, setRunning] = useState(false);
-  const [steps,   setSteps]   = useState<{ label:string; status:string; provider?:string }[]>([]);
-  const [curStep, setCurStep] = useState(-1);
-  const [report,  setReport]  = useState<string|null>(null);
+  const [asset,           setAsset]           = useState('');
+  const [running,         setRunning]         = useState(false);
+  const [steps,           setSteps]           = useState<{ label:string; status:string; provider?:string }[]>([]);
+  const [curStep,         setCurStep]         = useState(-1);
+  const [report,          setReport]          = useState<string|null>(null);
+  const [briefingLoading, setBriefingLoading] = useState(false);
+
+  const runBriefing = async () => {
+    if (briefingLoading || running) return;
+    setBriefingLoading(true);
+    setReport(null); setSteps([]); setCurStep(-1); setAsset('Briefing Diario');
+    try {
+      const result = await nexusMarketBriefing();
+      setReport(result);
+    } catch(e:any) {
+      setReport(`⚠️ Error al obtener el briefing: ${e.message}`);
+    } finally { setBriefingLoading(false); }
+  };
 
   const run = async () => {
     if (!asset.trim()||running) return;
@@ -753,6 +771,13 @@ function ResearchTab() {
             style={{ width:'100%', padding:'9px', background:asset.trim()&&!running?C.gold:'#1a1a28', border:'none', borderRadius:9, color:asset.trim()&&!running?'#07070e':C.muted, fontWeight:600, cursor:'pointer', fontSize:'.82em', fontFamily:"'Sora',sans-serif", transition:'all .18s', display:'flex', alignItems:'center', justifyContent:'center', gap:8 }}>
             {running?<><Spinner/>Investigando…</>:'🔬 Iniciar Research'}
           </button>
+          <div style={{ borderTop:`1px solid ${C.border}`, paddingTop:14 }}>
+            <div style={{ fontSize:'.62em', letterSpacing:'2px', color:C.muted, textTransform:'uppercase', marginBottom:7 }}>Mercados hoy</div>
+            <button onClick={runBriefing} disabled={briefingLoading || running}
+              style={{ width:'100%', padding:'9px', background:briefingLoading?'#1a1a28':`${C.blue}18`, border:`1px solid ${briefingLoading?C.border:C.blue+'44'}`, borderRadius:9, color:briefingLoading?C.muted:C.blue, fontWeight:600, cursor:'pointer', fontSize:'.82em', fontFamily:"'Sora',sans-serif", transition:'all .18s', display:'flex', alignItems:'center', justifyContent:'center', gap:8 }}>
+              {briefingLoading?<><Spinner/>Cargando…</>:'📊 Briefing diario'}
+            </button>
+          </div>
         </div>
         {steps.length>0 && (
           <div>
@@ -816,7 +841,7 @@ function ResearchTab() {
                 <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.22em', fontWeight:600, color:C.goldL }}>Informe de Inversión — {asset}</div>
                 <div style={{ fontSize:'.68em', color:C.muted, fontFamily:"'DM Mono',monospace", marginTop:2, display:'flex', gap:8, alignItems:'center' }}>
                   {new Date().toLocaleDateString('es-ES',{weekday:'long',year:'numeric',month:'long',day:'numeric'})}
-                  <ProviderBadge provider="anthropic" model="claude-sonnet-4-20250514" />
+                  <ProviderBadge provider="anthropic" model="claude-sonnet-4-6" />
                 </div>
               </div>
             </div>
@@ -1008,10 +1033,10 @@ function SettingsTab({ profile, setProfile, userProfile, setUserProfile }:{
           <div style={{ fontSize:'.74em', color:C.muted, marginBottom:14 }}>Cada agente usa el modelo óptimo para su tarea.</div>
           <div style={{ background:C.surf2, border:`1px solid ${C.border}`, borderRadius:13, overflow:'hidden' }}>
             {([
-              ['◈ AURUM',  'Asesor general',      'anthropic', 'claude-sonnet-4-5',      'Mejor calidad conversacional + búsqueda web'],
+              ['◈ AURUM',  'Asesor general',      'anthropic', 'claude-sonnet-4-6',      'Mejor calidad conversacional + búsqueda web'],
               ['🌐 MACRO', 'Análisis macro',       'openai',    'gpt-4o-search-preview',  'Datos macroeconómicos en tiempo real'],
               ['⚖️ RIESGO','Gestión de riesgos',   'deepseek',  'deepseek-reasoner (R1)', 'Razonamiento matemático profundo (VaR, Sharpe)'],
-              ['🧾 FISCAL','Asesoría fiscal',       'anthropic', 'claude-sonnet-4-5',      'Interpretación de normativa fiscal española'],
+              ['🧾 FISCAL','Asesoría fiscal',       'anthropic', 'claude-sonnet-4-6',      'Interpretación de normativa fiscal española'],
             ] as [string,string,string,string,string][]).map(([agent, role, prov, model, desc]) => {
               const pm = PROVIDER_META[prov as keyof typeof PROVIDER_META];
               return (
