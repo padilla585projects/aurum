@@ -6,8 +6,18 @@ import {
 import {
   initNexus, getMemory, nexusChat, nexusResearch, nexusPrices, nexusMarketBriefing,
   nexusInvestmentProposal, classifyQuery, PROVIDER_META, PROFILES, EMPTY_PROFILE,
+  // Herramientas exclusivas
+  stressTest, detectDrift, rebalancePlan, taxLossOpportunities, portfolioRiskScore,
+  formatStressResults, formatDrift, formatTaxLoss,
+  // Motor autónomo
+  loadAlerts, markAlertRead, clearAlerts, unreadCount, startMonitor, stopMonitor,
+  loadAutonomousConfig, saveAutonomousConfig, evaluateAurumPerformance,
+  saveRecommendation,
 } from './nexus/index';
-import type { AgentKey, ChatMessage, DisplayMessage, InvestmentProposal, Position, RouteResult, UserProfile } from './nexus/index';
+import type {
+  AgentKey, ChatMessage, DisplayMessage, InvestmentProposal, Position, RouteResult, UserProfile,
+  AurumAlert, AutonomousConfig,
+} from './nexus/index';
 import { callAnthropic } from './nexus/providers';
 
 /* ══════════════════════════════════════════════════════════════
@@ -41,6 +51,10 @@ const bootstrap = () => {
     input::placeholder { color:#252540 }
     input[type=range] { accent-color:#c9a84c; cursor:pointer }
     * { box-sizing:border-box }
+    html,body { height:100%; overflow:hidden; }
+    .bnav-btn:active { transform:scale(.93)!important }
+    .bnav-btn.active .bnav-icon { transform:translateY(-2px) }
+    @media (max-width:600px) { ::-webkit-scrollbar { display:none } }
   `;
   document.head.appendChild(s);
 };
@@ -172,6 +186,58 @@ const Card = ({ children, style={} }:{ children:React.ReactNode; style?:React.CS
 );
 
 const inputBase:React.CSSProperties = { background:C.surf2, border:`1px solid ${C.border2}`, borderRadius:9, padding:'8px 11px', color:C.text, fontSize:'.82em', fontFamily:"'Sora',sans-serif", outline:'none', width:'100%', transition:'border-color .2s' };
+
+/* ══════════════════════════════════════════════════════════════
+   ALERT CENTER
+══════════════════════════════════════════════════════════════ */
+function AlertCenter({ onClose, onNavigate }:{ onClose:()=>void; onNavigate:(tab:string)=>void }) {
+  const [alerts, setAlerts] = useState<AurumAlert[]>([]);
+  useEffect(() => { setAlerts([...loadAlerts()].reverse()); }, []);
+
+  const sev = (a: AurumAlert) =>
+    a.severity === 'critical' ? C.red : a.severity === 'warning' ? '#e8734a' : C.blue;
+
+  const read = (id: string) => { markAlertRead(id); setAlerts(prev => prev.map(a => a.id===id?{...a,read:true}:a)); };
+  const clear = () => { clearAlerts(); setAlerts([]); };
+
+  return (
+    <div style={{ position:'fixed', top:0, right:0, width:340, height:'100vh', background:C.surf, borderLeft:`1px solid ${C.border}`, zIndex:200, display:'flex', flexDirection:'column', boxShadow:'-8px 0 32px #00000088' }}>
+      <div style={{ padding:'14px 16px', borderBottom:`1px solid ${C.border}`, display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+        <div>
+          <div style={{ fontSize:'.78em', fontWeight:600, color:C.goldL }}>Centro de Alertas</div>
+          <div style={{ fontSize:'.62em', color:C.muted, marginTop:2 }}>{alerts.filter(a=>!a.read).length} sin leer · {alerts.length} total</div>
+        </div>
+        <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+          {alerts.length > 0 && <button onClick={clear} style={{ background:'transparent', border:`1px solid ${C.border2}`, color:C.muted, cursor:'pointer', fontSize:'.65em', borderRadius:6, padding:'3px 8px', fontFamily:"'Sora',sans-serif" }}>Limpiar</button>}
+          <button onClick={onClose} style={{ background:'transparent', border:'none', color:C.muted, cursor:'pointer', fontSize:'1.1em' }}>✕</button>
+        </div>
+      </div>
+      <div style={{ flex:1, overflow:'auto', padding:'10px 14px', display:'flex', flexDirection:'column', gap:8 }}>
+        {alerts.length === 0 && (
+          <div style={{ color:C.faint, fontSize:'.78em', lineHeight:1.6, paddingTop:12 }}>No hay alertas. AURUM monitoriza tu cartera automáticamente cada hora.</div>
+        )}
+        {alerts.map(a => (
+          <div key={a.id} onClick={() => read(a.id)} style={{ padding:'10px 12px', background: a.read?'#0a0a14':`${sev(a)}08`, border:`1px solid ${a.read?C.border:sev(a)+'44'}`, borderRadius:10, cursor:'pointer', transition:'all .2s', opacity: a.read ? 0.65 : 1 }}>
+            <div style={{ display:'flex', alignItems:'flex-start', gap:8, marginBottom:4 }}>
+              <div style={{ width:7, height:7, borderRadius:'50%', background: a.read ? C.faint : sev(a), flexShrink:0, marginTop:3, boxShadow: a.read ? 'none' : `0 0 6px ${sev(a)}` }} />
+              <div style={{ fontSize:'.78em', fontWeight:600, color: a.read ? C.muted : C.text, lineHeight:1.3 }}>{a.title}</div>
+            </div>
+            <div style={{ fontSize:'.7em', color:C.muted, lineHeight:1.5, paddingLeft:15 }}>{a.body}</div>
+            {a.actionable && a.actionTab && !a.read && (
+              <button onClick={e => { e.stopPropagation(); read(a.id); onClose(); onNavigate(a.actionTab!); }}
+                style={{ marginTop:7, marginLeft:15, background:`${sev(a)}18`, border:`1px solid ${sev(a)}44`, borderRadius:6, padding:'4px 10px', color:sev(a), cursor:'pointer', fontSize:'.65em', fontFamily:"'Sora',sans-serif" }}>
+                {a.action} →
+              </button>
+            )}
+            <div style={{ fontSize:'.6em', color:C.faint, marginTop:5, paddingLeft:15 }}>
+              {new Date(a.createdAt).toLocaleString('es-ES', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' })}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 /* ══════════════════════════════════════════════════════════════
    MEMORY PANEL  (shown in chat sidebar)
@@ -1039,6 +1105,15 @@ function InvestTab({ profile, portfolio, setPortfolio, userProfile }:{
   const confirm = async () => {
     if (!proposal) return;
     setPhase('executing');
+    // Guardar recomendación para tracking de rendimiento
+    saveRecommendation({
+      trades:          proposal.trades.map(t => ({ ticker: t.ticker, amount: t.amount, isin: t.isin })),
+      profile,
+      capital:         proposal.totalAmount,
+      rationale:       proposal.rationale,
+      executed:        true,
+      estimatedReturn: proposal.estimates.base,
+    });
     const cfg = await getBackendConfig();
 
     if (cfg) {
@@ -1084,6 +1159,46 @@ function InvestTab({ profile, portfolio, setPortfolio, userProfile }:{
           <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.5em', fontWeight:600, color:C.goldL, marginBottom:4 }}>Invertir con AURUM</div>
           <div style={{ fontSize:'.78em', color:C.muted }}>AURUM analiza el mercado, propone el plan y lo ejecuta. Tú solo dices <strong style={{ color:C.text }}>Sí</strong>.</div>
         </div>
+
+        {/* Panel de análisis de cartera — solo cuando hay posiciones */}
+        {portfolio.length > 0 && (phase === 'idle' || phase === 'loading') && (() => {
+          const drift = detectDrift(portfolio, profile);
+          const risk  = portfolioRiskScore(portfolio);
+          const stress = stressTest(portfolio);
+          const worst = stress.length ? stress.reduce((a, b) => a.portfolioDropPct < b.portfolioDropPct ? a : b) : null;
+          return (
+            <Card style={{ padding:'16px 18px', background:`${C.surf3}` }}>
+              <div style={{ fontSize:'.62em', letterSpacing:'2px', color:C.muted, textTransform:'uppercase', marginBottom:12 }}>Diagnóstico de cartera</div>
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:12 }}>
+                {/* Drift */}
+                <div style={{ padding:'10px 12px', background:drift.needsRebal?`${C.red}0a`:`${C.green}0a`, border:`1px solid ${drift.needsRebal?C.red+'33':C.green+'33'}`, borderRadius:9 }}>
+                  <div style={{ fontSize:'.6em', color:C.muted, marginBottom:4, letterSpacing:'.5px' }}>Drift</div>
+                  <div style={{ fontSize:'1.15em', fontWeight:700, color:drift.needsRebal?C.red:C.green, fontFamily:"'DM Mono',monospace" }}>{drift.driftPct}%</div>
+                  <div style={{ fontSize:'.62em', color:C.muted, marginTop:2 }}>{drift.needsRebal ? '⚠ Rebalanceo' : '✓ OK'}</div>
+                </div>
+                {/* Risk score */}
+                <div style={{ padding:'10px 12px', background:`${risk.color}0a`, border:`1px solid ${risk.color}33`, borderRadius:9 }}>
+                  <div style={{ fontSize:'.6em', color:C.muted, marginBottom:4, letterSpacing:'.5px' }}>Riesgo</div>
+                  <div style={{ fontSize:'1.15em', fontWeight:700, color:risk.color, fontFamily:"'DM Mono',monospace" }}>{risk.score}/100</div>
+                  <div style={{ fontSize:'.62em', color:C.muted, marginTop:2 }}>{risk.label}</div>
+                </div>
+                {/* Worst crash */}
+                {worst && (
+                  <div style={{ padding:'10px 12px', background:`${C.red}0a`, border:`1px solid ${C.red}22`, borderRadius:9 }}>
+                    <div style={{ fontSize:'.6em', color:C.muted, marginBottom:4, letterSpacing:'.5px' }}>Peor crisis</div>
+                    <div style={{ fontSize:'1.15em', fontWeight:700, color:C.red, fontFamily:"'DM Mono',monospace" }}>{worst.portfolioDropPct}%</div>
+                    <div style={{ fontSize:'.62em', color:C.muted, marginTop:2 }}>{worst.scenario.year}</div>
+                  </div>
+                )}
+              </div>
+              {drift.needsRebal && (
+                <div style={{ marginTop:10, padding:'8px 10px', background:`${C.red}08`, border:`1px solid ${C.red}22`, borderRadius:7, fontSize:'.68em', color:C.muted, lineHeight:1.5 }}>
+                  ⚠️ {drift.message}
+                </div>
+              )}
+            </Card>
+          );
+        })()}
 
         {/* Input */}
         {(phase === 'idle' || phase === 'loading') && (
@@ -1349,6 +1464,96 @@ function BackendSection() {
   );
 }
 
+function AutonomousSection() {
+  const [cfg, setCfg] = useState<AutonomousConfig>(() => loadAutonomousConfig());
+  const [perf, setPerf] = useState(() => evaluateAurumPerformance());
+  const fs: React.CSSProperties = { ...inputBase, padding:'8px 12px' };
+
+  const update = (patch: Partial<AutonomousConfig>) => {
+    const next = { ...cfg, ...patch };
+    setCfg(next);
+    saveAutonomousConfig(next);
+  };
+
+  const Toggle = ({ val, onChange, label }: { val:boolean; onChange:(v:boolean)=>void; label:string }) => (
+    <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'8px 0', borderBottom:`1px solid ${C.border}22` }}>
+      <span style={{ fontSize:'.78em', color:C.text }}>{label}</span>
+      <button onClick={() => onChange(!val)} style={{
+        width:38, height:20, borderRadius:10, border:'none', cursor:'pointer', transition:'all .2s',
+        background: val ? C.gold : C.faint, position:'relative',
+      }}>
+        <div style={{ position:'absolute', top:2, left: val?18:2, width:16, height:16, borderRadius:'50%', background:'#fff', transition:'left .2s' }} />
+      </button>
+    </div>
+  );
+
+  return (
+    <div>
+      <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.18em', fontWeight:600, color:C.goldL, marginBottom:4 }}>Monitorización Autónoma</div>
+      <div style={{ fontSize:'.74em', color:C.muted, marginBottom:14 }}>AURUM vigila tu cartera en segundo plano y te avisa si algo requiere atención.</div>
+      <div style={{ background:C.surf2, border:`1px solid ${C.border}`, borderRadius:13, padding:'18px 20px', display:'flex', flexDirection:'column', gap:12 }}>
+        <Toggle val={cfg.enabled}       onChange={v => update({ enabled: v })}       label="Monitor activo" />
+        <Toggle val={cfg.alertOnDrift}  onChange={v => update({ alertOnDrift: v })}  label="Alertar cuando la cartera se desvíe del perfil" />
+        <Toggle val={cfg.alertOnRisk}   onChange={v => update({ alertOnRisk: v })}   label="Alertar cuando el riesgo supere el umbral" />
+        <Toggle val={cfg.alertOnLoss}   onChange={v => update({ alertOnLoss: v })}   label="Alertar en pérdidas significativas" />
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginTop:4 }}>
+          <div>
+            <div style={{ fontSize:'.62em', color:C.muted, marginBottom:5 }}>Intervalo de revisión (min)</div>
+            <input type="number" min={15} max={1440} value={cfg.monitorInterval}
+              onChange={e => update({ monitorInterval: parseInt(e.target.value) || 60 })}
+              style={{ ...fs, padding:'7px 10px' }} />
+          </div>
+          <div>
+            <div style={{ fontSize:'.62em', color:C.muted, marginBottom:5 }}>Umbral de pérdida (%)</div>
+            <input type="number" min={-50} max={0} value={cfg.lossThreshold}
+              onChange={e => update({ lossThreshold: parseFloat(e.target.value) || -10 })}
+              style={{ ...fs, padding:'7px 10px' }} />
+          </div>
+        </div>
+        {cfg.lastMonitorAt > 0 && (
+          <div style={{ fontSize:'.65em', color:C.faint }}>
+            Última revisión: {new Date(cfg.lastMonitorAt).toLocaleString('es-ES', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' })}
+          </div>
+        )}
+      </div>
+
+      {/* Performance de AURUM */}
+      {perf.totalRecs > 0 && (
+        <div style={{ marginTop:16, background:C.surf2, border:`1px solid ${C.border}`, borderRadius:13, padding:'18px 20px' }}>
+          <div style={{ fontSize:'.72em', fontWeight:600, color:C.goldL, marginBottom:10 }}>Rendimiento de AURUM</div>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, marginBottom:10 }}>
+            <div style={{ textAlign:'center' }}>
+              <div style={{ fontSize:'1.4em', fontWeight:700, color:C.gold, fontFamily:"'DM Mono',monospace" }}>{perf.totalRecs}</div>
+              <div style={{ fontSize:'.6em', color:C.muted }}>Recomendaciones</div>
+            </div>
+            <div style={{ textAlign:'center' }}>
+              <div style={{ fontSize:'1.4em', fontWeight:700, color:C.green, fontFamily:"'DM Mono',monospace" }}>{perf.executedRecs}</div>
+              <div style={{ fontSize:'.6em', color:C.muted }}>Ejecutadas</div>
+            </div>
+            <div style={{ textAlign:'center' }}>
+              <div style={{ fontSize:'1.4em', fontWeight:700, color: perf.accuracy >= 70 ? C.green : '#e8734a', fontFamily:"'DM Mono',monospace" }}>{perf.accuracy}%</div>
+              <div style={{ fontSize:'.6em', color:C.muted }}>Precisión</div>
+            </div>
+          </div>
+          {perf.withActualData > 0 && (
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:8 }}>
+              <div style={{ padding:'8px 10px', background:`${C.blue}08`, border:`1px solid ${C.blue}22`, borderRadius:8 }}>
+                <div style={{ fontSize:'.6em', color:C.muted }}>Retorno estimado medio</div>
+                <div style={{ fontSize:'.95em', fontWeight:600, color:C.blue, fontFamily:"'DM Mono',monospace" }}>{perf.avgEstimated >= 0 ? '+' : ''}{perf.avgEstimated}%</div>
+              </div>
+              <div style={{ padding:'8px 10px', background:`${C.green}08`, border:`1px solid ${C.green}22`, borderRadius:8 }}>
+                <div style={{ fontSize:'.6em', color:C.muted }}>Retorno real medio</div>
+                <div style={{ fontSize:'.95em', fontWeight:600, color:C.green, fontFamily:"'DM Mono',monospace" }}>{perf.avgActual >= 0 ? '+' : ''}{perf.avgActual}%</div>
+              </div>
+            </div>
+          )}
+          <div style={{ fontSize:'.68em', color:C.muted, lineHeight:1.5 }}>◆ {perf.verdict}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SettingsTab({ profile, setProfile, userProfile, setUserProfile }:{
   profile: string;
   setProfile: (p:string)=>void;
@@ -1462,8 +1667,67 @@ function SettingsTab({ profile, setProfile, userProfile, setUserProfile }:{
         {/* Backend Proxmox */}
         <BackendSection />
 
+        {/* Monitorización autónoma */}
+        <AutonomousSection />
+
       </div>
     </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════
+   BOTTOM NAV
+══════════════════════════════════════════════════════════════ */
+function BottomNav({ tab, setTab, alertCount, onAlertOpen }: {
+  tab: string; setTab: (t:string)=>void;
+  alertCount: number; onAlertOpen: ()=>void;
+}) {
+  const BNAV = [
+    { id:'chat',      icon:'💬', label:'Chat'      },
+    { id:'portfolio', icon:'📊', label:'Cartera'   },
+    { id:'invest',    icon:'💰', label:'Invertir'  },
+    { id:'research',  icon:'🔬', label:'Research'  },
+    { id:'settings',  icon:'⚙️', label:'Ajustes'   },
+  ];
+  return (
+    <nav style={{
+      position:'fixed', bottom:0, left:0, right:0, zIndex:100,
+      background:'rgba(9,9,20,0.97)', backdropFilter:'blur(20px)',
+      borderTop:`1px solid #1e1e30`,
+      display:'flex', alignItems:'stretch',
+      paddingBottom:'env(safe-area-inset-bottom, 0px)',
+      height:'calc(58px + env(safe-area-inset-bottom, 0px))',
+    }}>
+      {BNAV.map(n => (
+        <button key={n.id} className={`bnav-btn${tab===n.id?' active':''}`}
+          onClick={() => setTab(n.id)}
+          style={{
+            flex:1, background:'transparent', border:'none', cursor:'pointer',
+            display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center',
+            gap:3, color: tab===n.id ? C.gold : C.muted, transition:'all .18s',
+            padding:'6px 0 2px', position:'relative',
+          }}>
+          <span className="bnav-icon" style={{ fontSize:'1.35em', lineHeight:1, transition:'transform .18s', display:'block' }}>{n.icon}</span>
+          <span style={{ fontSize:'.58em', fontWeight: tab===n.id ? 600 : 400, letterSpacing:'.04em', fontFamily:"'Sora',sans-serif" }}>{n.label}</span>
+          {tab===n.id && <div style={{ position:'absolute', bottom:0, width:24, height:2, background:C.gold, borderRadius:'2px 2px 0 0' }} />}
+        </button>
+      ))}
+      {/* Botón de alertas */}
+      <button onClick={onAlertOpen} style={{
+        width:46, background:'transparent', border:'none', cursor:'pointer',
+        display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center',
+        gap:3, color: alertCount > 0 ? '#e8734a' : C.muted, transition:'all .18s',
+        padding:'6px 0 2px', position:'relative', borderLeft:`1px solid ${C.border}`,
+      }}>
+        <span style={{ fontSize:'1.2em', lineHeight:1 }}>🔔</span>
+        <span style={{ fontSize:'.52em', letterSpacing:'.04em', fontFamily:"'Sora',sans-serif" }}>Alertas</span>
+        {alertCount > 0 && (
+          <div style={{ position:'absolute', top:6, right:8, width:16, height:16, borderRadius:'50%', background:'#e8734a', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'.5em', color:'#fff', fontWeight:700, lineHeight:1 }}>
+            {alertCount > 9 ? '9+' : alertCount}
+          </div>
+        )}
+      </button>
+    </nav>
   );
 }
 
@@ -1471,81 +1735,101 @@ function SettingsTab({ profile, setProfile, userProfile, setUserProfile }:{
    ROOT APP
 ══════════════════════════════════════════════════════════════ */
 export default function App() {
-  const [tab,         setTab]         = useState('chat');
-  const [profile,     setProfile]     = useState('moderado');
-  const [portfolio,   setPortfolio]   = useState<Position[]>([]);
-  const [userProfile, setUserProfile] = useState<UserProfile>(EMPTY_PROFILE);
+  const [tab,          setTab]         = useState('chat');
+  const [profile,      setProfile]     = useState('moderado');
+  const [portfolio,    setPortfolio]   = useState<Position[]>([]);
+  const [userProfile,  setUserProfile] = useState<UserProfile>(EMPTY_PROFILE);
+  const [alertCount,   setAlertCount]  = useState(0);
+  const [showAlerts,   setShowAlerts]  = useState(false);
+
+  const portfolioRef = useRef<Position[]>([]);
+  const profileRef   = useRef<string>('moderado');
+  portfolioRef.current = portfolio;
+  profileRef.current   = profile;
 
   useEffect(() => {
     bootstrap();
     initNexus();
-    sGet('aurum-portfolio').then(p => { if (p) setPortfolio(p); });
-    sGet('aurum-user-profile').then(p => { if (p) setUserProfile(p); });
+    sGet('aurum-portfolio').then((p:Position[]|null) => { if (p) setPortfolio(p); });
+    sGet('aurum-user-profile').then((p:UserProfile|null) => { if (p) setUserProfile(p); });
+    sGet('aurum-profile').then((p:string|null) => { if (p) setProfile(p); });
+    // Inicializar contador de alertas
+    setAlertCount(unreadCount());
+    // Arrancar monitor autónomo
+    startMonitor(
+      () => portfolioRef.current,
+      () => profileRef.current,
+      (count) => setAlertCount(count),
+    );
+    return () => stopMonitor();
   }, []);
 
-  const navItem = NAV.find(n => n.id === tab);
-  const pf      = PROFILES[profile];
+  const pf = PROFILES[profile];
+
+  const handleSetProfile = (p: string) => {
+    setProfile(p);
+    sSet('aurum-profile', p);
+  };
 
   return (
-    <div style={{ display:'flex', height:'100vh', width:'100%', background:C.bg, fontFamily:"'Sora',sans-serif", color:C.text, overflow:'hidden' }}>
-      {/* Ambient */}
+    <div style={{ display:'flex', flexDirection:'column', height:'100vh', width:'100%', background:C.bg, fontFamily:"'Sora',sans-serif", color:C.text, overflow:'hidden', position:'relative' }}>
+      {/* Ambient orbs */}
       <div style={{ position:'fixed', top:-120, left:-80, width:380, height:380, borderRadius:'50%', background:`radial-gradient(circle,${C.gold}09 0%,transparent 70%)`, animation:'orb-float 7s ease-in-out infinite', pointerEvents:'none', zIndex:0 }}/>
       <div style={{ position:'fixed', bottom:-80, right:250, width:300, height:300, borderRadius:'50%', background:`radial-gradient(circle,${C.blue}07 0%,transparent 70%)`, animation:'orb-float 9s ease-in-out 3s infinite', pointerEvents:'none', zIndex:0 }}/>
       <div style={{ position:'fixed', inset:0, backgroundImage:`linear-gradient(${C.gold}035 1px,transparent 1px),linear-gradient(90deg,${C.gold}035 1px,transparent 1px)`, backgroundSize:'44px 44px', pointerEvents:'none', zIndex:0 }}/>
 
-      {/* Side nav */}
-      <nav style={{ width:62, flexShrink:0, background:'#09091a', borderRight:`1px solid ${C.border}`, display:'flex', flexDirection:'column', alignItems:'center', padding:'14px 0 16px', gap:3, zIndex:10 }}>
-        <div style={{ width:40, height:40, borderRadius:11, background:`linear-gradient(135deg,${C.goldD},${C.goldL})`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:18, fontWeight:800, color:'#07070e', fontFamily:"'Cormorant Garamond',serif", boxShadow:`0 0 22px ${C.gold}45`, marginBottom:14, flexShrink:0 }}>A</div>
-        {NAV.map(n=>(
-          <button key={n.id} className="nav-icon" onClick={()=>setTab(n.id)} title={n.label}
-            style={{ width:44, height:44, borderRadius:11, background:tab===n.id?`${C.gold}18`:'transparent', border:`1px solid ${tab===n.id?C.gold+'44':'transparent'}`, color:tab===n.id?C.gold:C.muted, cursor:'pointer', fontSize:'1.22em', display:'flex', alignItems:'center', justifyContent:'center', transition:'all .18s', flexShrink:0 }}>
-            {n.icon}
-          </button>
-        ))}
-        <div style={{ flex:1 }}/>
-        <div style={{ display:'flex', flexDirection:'column', gap:4, alignItems:'center', paddingTop:8, borderTop:`1px solid ${C.border}`, width:'100%' }}>
-          {Object.entries(PROFILES).map(([key,p])=>(
-            <button key={key} onClick={()=>setProfile(key)} title={`Perfil: ${p.label}`}
-              style={{ width:32, height:32, borderRadius:9, background:profile===key?p.color+'1a':'transparent', border:`1px solid ${profile===key?p.color+'55':'transparent'}`, cursor:'pointer', fontSize:'.9em', transition:'all .18s', display:'flex', alignItems:'center', justifyContent:'center' }}>
-              {p.emoji}
-            </button>
-          ))}
-        </div>
-      </nav>
-
-      {/* Main */}
-      <div style={{ flex:1, display:'flex', flexDirection:'column', minWidth:0, zIndex:5 }}>
-        <header style={{ padding:'11px 20px', borderBottom:`1px solid ${C.border}`, background:'rgba(9,9,18,.97)', backdropFilter:'blur(16px)', display:'flex', alignItems:'center', justifyContent:'space-between', flexShrink:0 }}>
-          <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-            <span style={{ fontSize:'1.1em' }}>{navItem?.icon}</span>
-            <div>
-              <div style={{ fontSize:'.83em', fontWeight:500, color:'#c0c0e0' }}>{navItem?.label}</div>
-              <div style={{ fontSize:'.6em', color:C.faint, marginTop:1, display:'flex', gap:6, alignItems:'center' }}>
-                AURUM Nexus · Perfil {pf.emoji} <span style={{ color:pf.color }}>{pf.label}</span>
-                {portfolio.length>0 && <> · {portfolio.length} pos · {portfolio.reduce((a,p)=>a+p.shares*p.currentPrice,0).toLocaleString('es-ES',{maximumFractionDigits:0})}€</>}
-              </div>
+      {/* Header compacto mobile */}
+      <header style={{
+        background:'rgba(9,9,20,0.97)', backdropFilter:'blur(16px)',
+        borderBottom:`1px solid ${C.border}`,
+        display:'flex', alignItems:'center', justifyContent:'space-between',
+        padding:`calc(10px + env(safe-area-inset-top, 0px)) 16px 10px`,
+        flexShrink:0, zIndex:10, position:'relative',
+      }}>
+        <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+          <div style={{ width:32, height:32, borderRadius:9, background:`linear-gradient(135deg,${C.goldD},${C.goldL})`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:15, fontWeight:800, color:'#07070e', fontFamily:"'Cormorant Garamond',serif", boxShadow:`0 0 16px ${C.gold}40`, flexShrink:0 }}>A</div>
+          <div>
+            <div style={{ fontSize:'.82em', fontWeight:600, color:C.text, lineHeight:1.2 }}>AURUM <span style={{ color:C.gold, fontFamily:"'Cormorant Garamond',serif", fontStyle:'italic', fontWeight:400 }}>Nexus</span></div>
+            <div style={{ fontSize:'.56em', color:C.faint, display:'flex', gap:5, alignItems:'center', marginTop:1 }}>
+              {pf.emoji} <span style={{ color:pf.color }}>{pf.label}</span>
+              {portfolio.length>0 && <span style={{ color:C.muted }}>· {portfolio.reduce((a,p)=>a+p.shares*p.currentPrice,0).toLocaleString('es-ES',{maximumFractionDigits:0})}€</span>}
             </div>
           </div>
-          {/* Provider indicators */}
-          <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-            {Object.entries(PROVIDER_META).map(([k,v])=>(
-              <div key={k} style={{ display:'flex', alignItems:'center', gap:4 }}>
-                <div style={{ width:5, height:5, borderRadius:'50%', background:v.color, boxShadow:`0 0 5px ${v.color}` }}/>
-                <span style={{ fontSize:'.58em', color:v.color, fontFamily:"'DM Mono',monospace" }}>{v.short}</span>
-              </div>
-            ))}
-          </div>
-        </header>
-
-        <div style={{ flex:1, overflow:'hidden', position:'relative' }}>
-          {tab==='chat'      && <ChatTab profile={profile} portfolio={portfolio} userProfile={userProfile} />}
-          {tab==='portfolio' && <PortfolioTab portfolio={portfolio} setPortfolio={setPortfolio} />}
-          {tab==='invest'    && <InvestTab profile={profile} portfolio={portfolio} setPortfolio={setPortfolio} userProfile={userProfile} />}
-          {tab==='research'  && <ResearchTab />}
-          {tab==='simulator' && <SimulatorTab />}
-          {tab==='settings'  && <SettingsTab profile={profile} setProfile={setProfile} userProfile={userProfile} setUserProfile={setUserProfile} />}
         </div>
+        <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+          {Object.entries(PROVIDER_META).map(([k,v])=>(
+            <div key={k} style={{ display:'flex', alignItems:'center', gap:3 }}>
+              <div style={{ width:5, height:5, borderRadius:'50%', background:v.color, boxShadow:`0 0 5px ${v.color}` }}/>
+              <span style={{ fontSize:'.55em', color:v.color, fontFamily:"'DM Mono',monospace" }}>{v.short}</span>
+            </div>
+          ))}
+        </div>
+      </header>
+
+      {/* Contenido */}
+      <div style={{ flex:1, overflow:'hidden', position:'relative', paddingBottom:'calc(58px + env(safe-area-inset-bottom, 0px))' }}>
+        {tab==='chat'      && <ChatTab profile={profile} portfolio={portfolio} userProfile={userProfile} />}
+        {tab==='portfolio' && <PortfolioTab portfolio={portfolio} setPortfolio={setPortfolio} />}
+        {tab==='invest'    && <InvestTab profile={profile} portfolio={portfolio} setPortfolio={setPortfolio} userProfile={userProfile} />}
+        {tab==='research'  && <ResearchTab />}
+        {tab==='simulator' && <SimulatorTab />}
+        {tab==='settings'  && <SettingsTab profile={profile} setProfile={handleSetProfile} userProfile={userProfile} setUserProfile={setUserProfile} />}
       </div>
+
+      {/* Bottom Navigation */}
+      <BottomNav
+        tab={tab} setTab={setTab}
+        alertCount={alertCount}
+        onAlertOpen={() => { setShowAlerts(true); setAlertCount(0); }}
+      />
+
+      {/* Alert Center overlay */}
+      {showAlerts && (
+        <AlertCenter
+          onClose={() => setShowAlerts(false)}
+          onNavigate={(t) => { setShowAlerts(false); setTab(t); }}
+        />
+      )}
     </div>
   );
 }

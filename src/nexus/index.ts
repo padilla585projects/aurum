@@ -1,7 +1,7 @@
 import type { AgentKey, ChatMessage, Position, ResearchTask, RouteResult, UserMemory, UserProfile } from './types';
 import { callProvider } from './providers';
 import { routeAgent, routeTask, classifyQuery } from './router';
-import { trimHistory } from './tokens';
+import { trimHistory, cacheGet, cacheSet } from './tokens';
 import { loadMemory, saveMemory, extractFacts } from './memory';
 import { selectContext } from './context';
 import {
@@ -17,6 +17,24 @@ export { clearMemory } from './memory';
 export { classifyQuery } from './router';
 export { nexusInvestmentProposal } from './advisor';
 export type { InvestmentProposal, TradeItem } from './advisor';
+
+// Herramientas financieras exclusivas
+export {
+  stressTest, detectDrift, rebalancePlan, taxLossOpportunities,
+  portfolioRiskScore, etfDeepAnalysis,
+  formatStressResults, formatDrift, formatTaxLoss,
+} from './tools';
+export type { StressResult, DriftResult, RebalanceTrade, TaxLossResult, PortfolioRiskScore } from './tools';
+
+// Motor autónomo
+export {
+  loadAlerts, saveAlerts, markAlertRead, clearAlerts, unreadCount, addAlert,
+  loadRecommendations, saveRecommendation, updateRecommendationPerformance,
+  loadAutonomousConfig, saveAutonomousConfig,
+  runPortfolioMonitor, evaluateAurumPerformance,
+  startMonitor, stopMonitor,
+} from './autonomous';
+export type { AurumAlert, AlertType, AlertSeverity, RecommendationRecord, AutonomousConfig, MonitorResult, PerformanceSummary } from './autonomous';
 
 // ── Singleton memory state ──────────────────────────────────────────────────
 let _memory: UserMemory = { facts: [], interactions: 0, lastUpdated: 0 };
@@ -73,7 +91,6 @@ export async function nexusChat(
 }
 
 // ── Research pipeline ───────────────────────────────────────────────────────
-// Research tasks always need live data; synthesis needs full token budget.
 const RESEARCH_MAX_TOKENS: Partial<Record<ResearchTask, number>> = {
   news:       1024,
   financials: 1024,
@@ -92,39 +109,47 @@ export async function nexusResearch(
   const route      = routeTask(task);
   const system     = task === 'synthesis' ? buildSynthesisPrompt() : buildResearchPrompt();
   const maxTokens  = RESEARCH_MAX_TOKENS[task] ?? 1024;
-  const useSearch  = task !== 'risks'; // risks uses DeepSeek (no web), rest use GPT-4o Search
+  const useSearch  = task !== 'risks';
   if (onRoute) onRoute(route);
   return callProvider(route, [{ role: 'user', content: query }], system, undefined, maxTokens, useSearch);
 }
 
 // ── Daily market briefing ───────────────────────────────────────────────────
 export async function nexusMarketBriefing(): Promise<string> {
+  const key = 'briefing';
+  const cached = cacheGet(key);
+  if (cached) return cached;
+
   const route = routeAgent('macro');
-  return callProvider(
+  const result = await callProvider(
     route,
     [{ role: 'user', content: '¿Cómo están los mercados hoy? Dame el briefing completo.' }],
     buildMarketBriefingPrompt(),
-    undefined,
-    1536,
-    true,
+    undefined, 1536, true,
   );
+  cacheSet(key, result);
+  return result;
 }
 
 // ── Portfolio price refresh ─────────────────────────────────────────────────
 export async function nexusPrices(tickers: string[]): Promise<{ ticker: string; price: number }[]> {
+  const key    = `prices:${tickers.sort().join(',')}`;
+  const cached = cacheGet(key);
+  if (cached) { try { return JSON.parse(cached); } catch {} }
+
   const route = routeTask('prices');
   const reply = await callProvider(
     route,
     [{
       role: 'user',
-      content: `Busca el precio de cierre actual de estos activos: ${tickers.join(', ')}. Responde SOLO con JSON válido, sin texto ni backticks: [{"ticker":"XX","price":0.00},...]`,
+      content: `Precios actuales de: ${tickers.join(', ')}. SOLO JSON válido, sin texto ni backticks: [{"ticker":"XX","price":0.00},...]`,
     }],
-    'Eres un asistente financiero. Busca precios actuales y responde SOLO con JSON válido.',
-    undefined,
-    512,
-    true,
+    'Asistente financiero. Busca precios actuales. SOLO JSON.',
+    undefined, 512, true,
   );
   try {
-    return JSON.parse(reply.replace(/```[a-z]*\n?|```/g, '').trim());
+    const parsed = JSON.parse(reply.replace(/```[a-z]*\n?|```/g, '').trim());
+    cacheSet(key, JSON.stringify(parsed));
+    return parsed;
   } catch { return []; }
 }
