@@ -10,13 +10,19 @@ import {
   stressTest, detectDrift, rebalancePlan, taxLossOpportunities, portfolioRiskScore,
   formatStressResults, formatDrift, formatTaxLoss,
   // Motor autónomo
-  loadAlerts, markAlertRead, clearAlerts, unreadCount, startMonitor, stopMonitor,
+  loadAlerts, markAlertRead, clearAlerts, unreadCount, addAlert,
+  startMonitor, stopMonitor,
   loadAutonomousConfig, saveAutonomousConfig, evaluateAurumPerformance,
   saveRecommendation,
+  // Motor de decisión autónoma
+  loadAutoConfig, saveAutoConfig, loadActionLog,
+  startDecisionScheduler, stopDecisionScheduler,
+  // Auto-mejora
+  loadLessons, clearLessons,
 } from './nexus/index';
 import type {
   AgentKey, ChatMessage, DisplayMessage, InvestmentProposal, Position, RouteResult, UserProfile,
-  AurumAlert, AutonomousConfig,
+  AurumAlert, AutonomousConfig, AutoInvestConfig, ActionLogEntry, Decision, Lesson,
 } from './nexus/index';
 import { callAnthropic } from './nexus/providers';
 
@@ -1465,89 +1471,179 @@ function BackendSection() {
 }
 
 function AutonomousSection() {
-  const [cfg, setCfg] = useState<AutonomousConfig>(() => loadAutonomousConfig());
-  const [perf, setPerf] = useState(() => evaluateAurumPerformance());
+  const [monCfg,  setMonCfg]  = useState<AutonomousConfig>(() => loadAutonomousConfig());
+  const [autoCfg, setAutoCfg] = useState<AutoInvestConfig>(() => loadAutoConfig());
+  const [perf,    setPerf]    = useState(() => evaluateAurumPerformance());
+  const [log,     setLog]     = useState<ActionLogEntry[]>(() => [...loadActionLog()].reverse().slice(0, 10));
+  const [lessons, setLessons] = useState<Lesson[]>(() => loadLessons());
+  const [syncMsg, setSyncMsg] = useState('');
   const fs: React.CSSProperties = { ...inputBase, padding:'8px 12px' };
 
-  const update = (patch: Partial<AutonomousConfig>) => {
-    const next = { ...cfg, ...patch };
-    setCfg(next);
-    saveAutonomousConfig(next);
-  };
+  const updateMon  = (patch: Partial<AutonomousConfig>) => { const n = {...monCfg,...patch}; setMonCfg(n); saveAutonomousConfig(n); };
+  const updateAuto = (patch: Partial<AutoInvestConfig>) => { const n = {...autoCfg,...patch}; setAutoCfg(n); saveAutoConfig(n); };
 
-  const Toggle = ({ val, onChange, label }: { val:boolean; onChange:(v:boolean)=>void; label:string }) => (
+  const Toggle = ({ val, onChange, label, danger }: { val:boolean; onChange:(v:boolean)=>void; label:string; danger?:boolean }) => (
     <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'8px 0', borderBottom:`1px solid ${C.border}22` }}>
-      <span style={{ fontSize:'.78em', color:C.text }}>{label}</span>
+      <span style={{ fontSize:'.78em', color: danger && val ? '#e8734a' : C.text }}>{label}</span>
       <button onClick={() => onChange(!val)} style={{
         width:38, height:20, borderRadius:10, border:'none', cursor:'pointer', transition:'all .2s',
-        background: val ? C.gold : C.faint, position:'relative',
+        background: val ? (danger?'#e8734a':C.gold) : C.faint, position:'relative', flexShrink:0,
       }}>
         <div style={{ position:'absolute', top:2, left: val?18:2, width:16, height:16, borderRadius:'50%', background:'#fff', transition:'left .2s' }} />
       </button>
     </div>
   );
 
+  const syncBackend = async () => {
+    const cfg = await sGet('aurum-backend-config');
+    if (!cfg?.url) { setSyncMsg('Sin backend configurado'); return; }
+    setSyncMsg('Sincronizando…');
+    try {
+      const res = await fetch(`${cfg.url.replace(/\/$/,'')}/schedule`, {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json', 'X-AURUM-KEY': cfg.apiKey },
+        body: JSON.stringify({
+          enabled:        autoCfg.enabled,
+          interval_hours: autoCfg.runInterval === 'daily' ? 24 : autoCfg.runInterval === 'weekly' ? 168 : 720,
+          max_amount:     autoCfg.maxAmountPerRun,
+        }),
+      });
+      setSyncMsg(res.ok ? '✓ Backend sincronizado' : `Error ${res.status}`);
+    } catch(e:any) { setSyncMsg(`Error: ${e.message}`); }
+    setTimeout(() => setSyncMsg(''), 3000);
+  };
+
   return (
-    <div>
-      <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.18em', fontWeight:600, color:C.goldL, marginBottom:4 }}>Monitorización Autónoma</div>
-      <div style={{ fontSize:'.74em', color:C.muted, marginBottom:14 }}>AURUM vigila tu cartera en segundo plano y te avisa si algo requiere atención.</div>
-      <div style={{ background:C.surf2, border:`1px solid ${C.border}`, borderRadius:13, padding:'18px 20px', display:'flex', flexDirection:'column', gap:12 }}>
-        <Toggle val={cfg.enabled}       onChange={v => update({ enabled: v })}       label="Monitor activo" />
-        <Toggle val={cfg.alertOnDrift}  onChange={v => update({ alertOnDrift: v })}  label="Alertar cuando la cartera se desvíe del perfil" />
-        <Toggle val={cfg.alertOnRisk}   onChange={v => update({ alertOnRisk: v })}   label="Alertar cuando el riesgo supere el umbral" />
-        <Toggle val={cfg.alertOnLoss}   onChange={v => update({ alertOnLoss: v })}   label="Alertar en pérdidas significativas" />
-        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginTop:4 }}>
-          <div>
-            <div style={{ fontSize:'.62em', color:C.muted, marginBottom:5 }}>Intervalo de revisión (min)</div>
-            <input type="number" min={15} max={1440} value={cfg.monitorInterval}
-              onChange={e => update({ monitorInterval: parseInt(e.target.value) || 60 })}
-              style={{ ...fs, padding:'7px 10px' }} />
-          </div>
-          <div>
-            <div style={{ fontSize:'.62em', color:C.muted, marginBottom:5 }}>Umbral de pérdida (%)</div>
-            <input type="number" min={-50} max={0} value={cfg.lossThreshold}
-              onChange={e => update({ lossThreshold: parseFloat(e.target.value) || -10 })}
-              style={{ ...fs, padding:'7px 10px' }} />
+    <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
+
+      {/* Monitorización de alertas */}
+      <div>
+        <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.18em', fontWeight:600, color:C.goldL, marginBottom:4 }}>Monitorización Autónoma</div>
+        <div style={{ fontSize:'.74em', color:C.muted, marginBottom:12 }}>AURUM vigila tu cartera en segundo plano y genera alertas.</div>
+        <div style={{ background:C.surf2, border:`1px solid ${C.border}`, borderRadius:13, padding:'16px 18px', display:'flex', flexDirection:'column', gap:2 }}>
+          <Toggle val={monCfg.enabled}      onChange={v=>updateMon({enabled:v})}      label="Monitor activo" />
+          <Toggle val={monCfg.alertOnDrift} onChange={v=>updateMon({alertOnDrift:v})} label="Alertar en desvío de asignación" />
+          <Toggle val={monCfg.alertOnRisk}  onChange={v=>updateMon({alertOnRisk:v})}  label="Alertar en riesgo elevado" />
+          <Toggle val={monCfg.alertOnLoss}  onChange={v=>updateMon({alertOnLoss:v})}  label="Alertar en pérdidas significativas" />
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10, marginTop:8 }}>
+            <div>
+              <div style={{ fontSize:'.6em', color:C.muted, marginBottom:4 }}>Intervalo (min)</div>
+              <input type="number" min={15} value={monCfg.monitorInterval} onChange={e=>updateMon({monitorInterval:parseInt(e.target.value)||60})} style={{...fs,padding:'6px 10px'}} />
+            </div>
+            <div>
+              <div style={{ fontSize:'.6em', color:C.muted, marginBottom:4 }}>Umbral pérdida (%)</div>
+              <input type="number" max={0} value={monCfg.lossThreshold} onChange={e=>updateMon({lossThreshold:parseFloat(e.target.value)||-10})} style={{...fs,padding:'6px 10px'}} />
+            </div>
           </div>
         </div>
-        {cfg.lastMonitorAt > 0 && (
-          <div style={{ fontSize:'.65em', color:C.faint }}>
-            Última revisión: {new Date(cfg.lastMonitorAt).toLocaleString('es-ES', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' })}
-          </div>
-        )}
       </div>
 
-      {/* Performance de AURUM */}
+      {/* Modo autónomo total — AURUM actúa solo */}
+      <div>
+        <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.18em', fontWeight:600, color:C.goldL, marginBottom:4 }}>Modo Autónomo Total 🤖</div>
+        <div style={{ fontSize:'.74em', color:C.muted, marginBottom:12 }}>AURUM analiza el mercado, decide y ejecuta inversiones sin que hagas nada.</div>
+        <div style={{ background:autoCfg.enabled && !autoCfg.requireConfirm ? `${C.gold}08` : C.surf2, border:`1px solid ${autoCfg.enabled && !autoCfg.requireConfirm ? C.gold+'44' : C.border}`, borderRadius:13, padding:'16px 18px', display:'flex', flexDirection:'column', gap:2 }}>
+          <Toggle val={autoCfg.enabled}        onChange={v=>updateAuto({enabled:v})}         label="Auto-inversión activa" />
+          <Toggle val={!autoCfg.requireConfirm} onChange={v=>updateAuto({requireConfirm:!v})} label="Ejecutar sin confirmación (modo total)" danger />
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10, marginTop:8 }}>
+            <div>
+              <div style={{ fontSize:'.6em', color:C.muted, marginBottom:4 }}>Presupuesto máx/ciclo (€)</div>
+              <input type="number" min={10} value={autoCfg.maxAmountPerRun} onChange={e=>updateAuto({maxAmountPerRun:parseFloat(e.target.value)||100})} style={{...fs,padding:'6px 10px'}} />
+            </div>
+            <div>
+              <div style={{ fontSize:'.6em', color:C.muted, marginBottom:4 }}>Frecuencia</div>
+              <select value={autoCfg.runInterval} onChange={e=>updateAuto({runInterval:e.target.value as any})}
+                style={{...fs,padding:'6px 10px',cursor:'pointer'}}>
+                <option value="daily">Diario</option>
+                <option value="weekly">Semanal</option>
+                <option value="monthly">Mensual</option>
+              </select>
+            </div>
+          </div>
+          {!autoCfg.requireConfirm && (
+            <div style={{ marginTop:8, padding:'8px 10px', background:`${C.red}0a`, border:`1px solid ${C.red}22`, borderRadius:8, fontSize:'.68em', color:'#e8734a', lineHeight:1.5 }}>
+              ⚠️ Modo total activo: AURUM ejecutará órdenes en TR automáticamente, sin pedirte confirmación. Asegúrate de que el backend está autenticado y el presupuesto es el que quieres.
+            </div>
+          )}
+          <div style={{ display:'flex', alignItems:'center', gap:10, marginTop:8 }}>
+            <button onClick={syncBackend} style={{ background:`${C.blue}18`, border:`1px solid ${C.blue}44`, borderRadius:8, padding:'6px 14px', color:C.blue, cursor:'pointer', fontSize:'.75em', fontFamily:"'Sora',sans-serif" }}>
+              Sincronizar con backend →
+            </button>
+            {syncMsg && <span style={{ fontSize:'.7em', color: syncMsg.startsWith('✓') ? C.green : syncMsg.includes('Error') ? C.red : C.muted }}>{syncMsg}</span>}
+          </div>
+          {autoCfg.lastRunAt > 0 && <div style={{ fontSize:'.62em', color:C.faint }}>Último ciclo: {new Date(autoCfg.lastRunAt).toLocaleString('es-ES')}</div>}
+        </div>
+      </div>
+
+      {/* Log de acciones autónomas */}
+      {log.length > 0 && (
+        <div>
+          <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.1em', fontWeight:600, color:C.goldL, marginBottom:10 }}>Log de Acciones de AURUM</div>
+          <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+            {log.map(entry => (
+              <div key={entry.id} style={{ padding:'10px 12px', background:C.surf2, border:`1px solid ${entry.executed?C.green+'33':C.border}`, borderRadius:9 }}>
+                <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:4 }}>
+                  <span style={{ fontSize:'.75em' }}>{entry.executed ? '✅' : '📋'}</span>
+                  <span style={{ fontSize:'.75em', fontWeight:600, color: entry.executed ? C.green : C.muted, textTransform:'capitalize' }}>{entry.decisionType}</span>
+                  {entry.trades.length > 0 && <span style={{ fontSize:'.7em', color:C.gold, fontFamily:"'DM Mono',monospace" }}>{entry.trades.map(t=>t.ticker).join(', ')}</span>}
+                  <span style={{ fontSize:'.62em', color:C.faint, marginLeft:'auto' }}>{new Date(entry.executedAt).toLocaleString('es-ES',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</span>
+                </div>
+                <div style={{ fontSize:'.68em', color:C.muted, lineHeight:1.4 }}>{entry.reasoning}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Rendimiento de AURUM */}
       {perf.totalRecs > 0 && (
-        <div style={{ marginTop:16, background:C.surf2, border:`1px solid ${C.border}`, borderRadius:13, padding:'18px 20px' }}>
-          <div style={{ fontSize:'.72em', fontWeight:600, color:C.goldL, marginBottom:10 }}>Rendimiento de AURUM</div>
+        <div style={{ background:C.surf2, border:`1px solid ${C.border}`, borderRadius:13, padding:'16px 18px' }}>
+          <div style={{ fontSize:'.75em', fontWeight:600, color:C.goldL, marginBottom:10 }}>Rendimiento de AURUM</div>
           <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, marginBottom:10 }}>
-            <div style={{ textAlign:'center' }}>
-              <div style={{ fontSize:'1.4em', fontWeight:700, color:C.gold, fontFamily:"'DM Mono',monospace" }}>{perf.totalRecs}</div>
-              <div style={{ fontSize:'.6em', color:C.muted }}>Recomendaciones</div>
-            </div>
-            <div style={{ textAlign:'center' }}>
-              <div style={{ fontSize:'1.4em', fontWeight:700, color:C.green, fontFamily:"'DM Mono',monospace" }}>{perf.executedRecs}</div>
-              <div style={{ fontSize:'.6em', color:C.muted }}>Ejecutadas</div>
-            </div>
-            <div style={{ textAlign:'center' }}>
-              <div style={{ fontSize:'1.4em', fontWeight:700, color: perf.accuracy >= 70 ? C.green : '#e8734a', fontFamily:"'DM Mono',monospace" }}>{perf.accuracy}%</div>
-              <div style={{ fontSize:'.6em', color:C.muted }}>Precisión</div>
-            </div>
+            {[
+              { n:perf.totalRecs, label:'Total recom.', color:C.gold },
+              { n:perf.executedRecs, label:'Ejecutadas', color:C.green },
+              { n:perf.accuracy, label:'Precisión %', color: perf.accuracy>=70?C.green:'#e8734a' },
+            ].map(({ n, label, color }) => (
+              <div key={label} style={{ textAlign:'center', padding:'8px', background:'#0a0a14', borderRadius:8 }}>
+                <div style={{ fontSize:'1.3em', fontWeight:700, color, fontFamily:"'DM Mono',monospace" }}>{n}</div>
+                <div style={{ fontSize:'.58em', color:C.muted }}>{label}</div>
+              </div>
+            ))}
           </div>
           {perf.withActualData > 0 && (
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:8 }}>
-              <div style={{ padding:'8px 10px', background:`${C.blue}08`, border:`1px solid ${C.blue}22`, borderRadius:8 }}>
-                <div style={{ fontSize:'.6em', color:C.muted }}>Retorno estimado medio</div>
-                <div style={{ fontSize:'.95em', fontWeight:600, color:C.blue, fontFamily:"'DM Mono',monospace" }}>{perf.avgEstimated >= 0 ? '+' : ''}{perf.avgEstimated}%</div>
+              <div style={{ padding:'7px 10px', background:`${C.blue}08`, border:`1px solid ${C.blue}22`, borderRadius:7 }}>
+                <div style={{ fontSize:'.58em', color:C.muted }}>Estimado medio</div>
+                <div style={{ fontSize:'.9em', fontWeight:600, color:C.blue, fontFamily:"'DM Mono',monospace" }}>{perf.avgEstimated>=0?'+':''}{perf.avgEstimated}%</div>
               </div>
-              <div style={{ padding:'8px 10px', background:`${C.green}08`, border:`1px solid ${C.green}22`, borderRadius:8 }}>
-                <div style={{ fontSize:'.6em', color:C.muted }}>Retorno real medio</div>
-                <div style={{ fontSize:'.95em', fontWeight:600, color:C.green, fontFamily:"'DM Mono',monospace" }}>{perf.avgActual >= 0 ? '+' : ''}{perf.avgActual}%</div>
+              <div style={{ padding:'7px 10px', background:`${C.green}08`, border:`1px solid ${C.green}22`, borderRadius:7 }}>
+                <div style={{ fontSize:'.58em', color:C.muted }}>Real medio</div>
+                <div style={{ fontSize:'.9em', fontWeight:600, color:C.green, fontFamily:"'DM Mono',monospace" }}>{perf.avgActual>=0?'+':''}{perf.avgActual}%</div>
               </div>
             </div>
           )}
           <div style={{ fontSize:'.68em', color:C.muted, lineHeight:1.5 }}>◆ {perf.verdict}</div>
+        </div>
+      )}
+
+      {/* Lecciones aprendidas */}
+      {lessons.length > 0 && (
+        <div style={{ background:C.surf2, border:`1px solid ${C.border}`, borderRadius:13, padding:'16px 18px' }}>
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:10 }}>
+            <div style={{ fontSize:'.75em', fontWeight:600, color:C.goldL }}>Lecciones aprendidas por AURUM</div>
+            <button onClick={() => { clearLessons(); setLessons([]); }}
+              style={{ background:'transparent', border:`1px solid ${C.border2}`, color:C.muted, cursor:'pointer', fontSize:'.62em', borderRadius:6, padding:'2px 8px', fontFamily:"'Sora',sans-serif" }}>
+              Reset
+            </button>
+          </div>
+          {lessons.map((l, i) => (
+            <div key={i} style={{ display:'flex', gap:8, marginBottom:7, padding:'7px 10px', background:'#0a0a14', border:`1px solid ${C.border}`, borderRadius:7, fontSize:'.72em', color:C.text, lineHeight:1.5 }}>
+              <span style={{ color:C.gold, flexShrink:0 }}>◆</span>{l.text}
+              <span style={{ marginLeft:'auto', fontSize:'.75em', color:C.faint, flexShrink:0 }}>{Math.round(l.confidence*100)}%</span>
+            </div>
+          ))}
+          <div style={{ fontSize:'.62em', color:C.faint, marginTop:4 }}>Se actualizan semanalmente si hay ≥2 recomendaciones con rendimiento real registrado.</div>
         </div>
       )}
     </div>
@@ -1742,10 +1838,14 @@ export default function App() {
   const [alertCount,   setAlertCount]  = useState(0);
   const [showAlerts,   setShowAlerts]  = useState(false);
 
-  const portfolioRef = useRef<Position[]>([]);
-  const profileRef   = useRef<string>('moderado');
-  portfolioRef.current = portfolio;
-  profileRef.current   = profile;
+  const portfolioRef    = useRef<Position[]>([]);
+  const profileRef      = useRef<string>('moderado');
+  const userProfileRef  = useRef<UserProfile>(EMPTY_PROFILE);
+  const backendCfgRef   = useRef<{url:string;apiKey:string}|null>(null);
+
+  portfolioRef.current   = portfolio;
+  profileRef.current     = profile;
+  userProfileRef.current = userProfile;
 
   useEffect(() => {
     bootstrap();
@@ -1753,15 +1853,40 @@ export default function App() {
     sGet('aurum-portfolio').then((p:Position[]|null) => { if (p) setPortfolio(p); });
     sGet('aurum-user-profile').then((p:UserProfile|null) => { if (p) setUserProfile(p); });
     sGet('aurum-profile').then((p:string|null) => { if (p) setProfile(p); });
-    // Inicializar contador de alertas
+    sGet('aurum-backend-config').then((c:any) => { if (c?.url) backendCfgRef.current = c; });
+
     setAlertCount(unreadCount());
-    // Arrancar monitor autónomo
+
+    // Monitor de alertas (drift, riesgo, pérdidas)
     startMonitor(
       () => portfolioRef.current,
       () => profileRef.current,
       (count) => setAlertCount(count),
     );
-    return () => stopMonitor();
+
+    // Scheduler de decisiones autónomas (invest/rebalance/hold)
+    startDecisionScheduler(
+      () => portfolioRef.current,
+      () => profileRef.current,
+      () => userProfileRef.current,
+      () => backendCfgRef.current,
+      (decision: Decision, executed: boolean) => {
+        addAlert({
+          type:       'recommendation_update',
+          severity:   executed ? 'info' : 'warning',
+          title:      executed
+            ? `AURUM ejecutó autónomamente: ${decision.trades.map(t=>t.ticker).join(', ')}`
+            : `AURUM propone: ${decision.type} — ${decision.trades.map(t=>t.ticker).join(', ')||'mantener'}`,
+          body:       decision.reasoning,
+          actionable: !executed,
+          action:     executed ? undefined : 'Ver en Invertir',
+          actionTab:  'invest',
+        });
+        setAlertCount(unreadCount());
+      },
+    );
+
+    return () => { stopMonitor(); stopDecisionScheduler(); };
   }, []);
 
   const pf = PROFILES[profile];

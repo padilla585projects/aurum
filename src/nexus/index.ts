@@ -36,6 +36,19 @@ export {
 } from './autonomous';
 export type { AurumAlert, AlertType, AlertSeverity, RecommendationRecord, AutonomousConfig, MonitorResult, PerformanceSummary } from './autonomous';
 
+// Motor de decisión autónoma
+export {
+  makeDecision, runAutonomousCycle,
+  loadAutoConfig, saveAutoConfig,
+  loadActionLog,
+  startDecisionScheduler, stopDecisionScheduler,
+} from './decisions';
+export type { Decision, DecisionType, AutonomousTrade, AutoInvestConfig, ActionLogEntry } from './decisions';
+
+// Auto-mejora
+export { loadLessons, buildLessonsBlock, runLearningCycle, clearLessons } from './selflearn';
+export type { Lesson } from './selflearn';
+
 // ── Singleton memory state ──────────────────────────────────────────────────
 let _memory: UserMemory = { facts: [], interactions: 0, lastUpdated: 0 };
 let _loaded = false;

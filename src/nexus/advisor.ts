@@ -1,6 +1,7 @@
 import type { Position, UserProfile } from './types';
 import { callAnthropic } from './providers';
 import { PROFILES, buildUserBlock } from './prompts';
+import { buildLessonsBlock } from './selflearn';
 
 export interface TradeItem {
   ticker: string;
@@ -42,11 +43,13 @@ function buildAdvisorPrompt(
   const totalPortfolioVal = portfolio.reduce((a, p) => a + p.shares * p.currentPrice, 0);
   const userStr = buildUserBlock(user);
 
+  const lessons = buildLessonsBlock();
+
   return `Eres AURUM, gestor de inversiones autónomo. El usuario quiere invertir ${capital}€ AHORA.
 
 PERFIL DE RIESGO: ${pf.label} — ${pf.sys}
 ASIGNACIÓN OBJETIVO: ${pf.alloc}
-CARTERA ACTUAL: ${existingStr} (valor total: ${totalPortfolioVal.toFixed(0)}€)${userStr}
+CARTERA ACTUAL: ${existingStr} (valor total: ${totalPortfolioVal.toFixed(0)}€)${userStr}${lessons}
 
 INSTRUCCIONES:
 1. Usa búsqueda web para obtener el estado actual del mercado (índices, tipos BCE/Fed, sentimiento, oportunidades)
