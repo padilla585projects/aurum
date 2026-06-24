@@ -19,7 +19,11 @@ import {
   startDecisionScheduler, stopDecisionScheduler,
   // Auto-mejora
   loadLessons, clearLessons,
+  // Intérprete de comandos + control de PC/navegador
+  detectActionIntent, executeCommand, commandResultToMessage,
+  runBrowserTask, runLocalAgentTask, getAgentStatus,
 } from './nexus/index';
+import type { ComputerTaskResult } from './nexus/index';
 import type {
   AgentKey, ChatMessage, DisplayMessage, InvestmentProposal, Position, RouteResult, UserProfile,
   AurumAlert, AutonomousConfig, AutoInvestConfig, ActionLogEntry, Decision, Lesson,
@@ -78,6 +82,12 @@ const C = {
 const PIE_PAL = [C.gold, C.blue, C.green, C.purple, '#e8734a','#1abc9c','#e74c3c','#3498db'];
 
 /* ══════════════════════════════════════════════════════════════
+   VERSION
+══════════════════════════════════════════════════════════════ */
+const APP_VERSION = '1.2.0';
+const APP_BUILD   = '2026.06.24';
+
+/* ══════════════════════════════════════════════════════════════
    CONSTANTS
 ══════════════════════════════════════════════════════════════ */
 const NAV = [
@@ -85,6 +95,7 @@ const NAV = [
   { id:'portfolio', icon:'📁', label:'Cartera'   },
   { id:'invest',    icon:'💰', label:'Invertir'  },
   { id:'research',  icon:'🔬', label:'Research'  },
+  { id:'control',   icon:'🖥️', label:'Control'   },
   { id:'simulator', icon:'🧮', label:'Simulador' },
   { id:'settings',  icon:'⚙️', label:'Ajustes'   },
 ];
@@ -192,6 +203,104 @@ const Card = ({ children, style={} }:{ children:React.ReactNode; style?:React.CS
 );
 
 const inputBase:React.CSSProperties = { background:C.surf2, border:`1px solid ${C.border2}`, borderRadius:9, padding:'8px 11px', color:C.text, fontSize:'.82em', fontFamily:"'Sora',sans-serif", outline:'none', width:'100%', transition:'border-color .2s' };
+
+/* ── ISIN map para vender directamente desde la UI ───────────────────────── */
+const ISIN_MAP: Record<string, string> = {
+  // ETFs globales
+  VWCE: 'IE00B3RBWM25', XEON: 'LU0290358497', SPPW: 'IE00B3YCGJ38',
+  SGLN: 'IE00B579F325', EUNL: 'IE00B4L5Y983', VUSA: 'IE00B3XXRP09',
+  BTCE: 'DE000A27Z304', WGLD: 'DE000A2T6WD2', IEMA: 'IE00BKM4GZ66',
+  ZPRV: 'IE00BMT04N44', IS3N: 'IE00B14X4T88', QDVE: 'IE00BYML9W36',
+  AGGU: 'IE00B3F81409', XDWD: 'IE00B3F81R35', IWDA: 'IE00B4L5Y983',
+  EXXT: 'DE0002635307', VHYL: 'IE00B8GKDB10', IBTS: 'IE00B14X4T88',
+  // Acciones US
+  AAPL: 'US0378331005', MSFT: 'US5949181045', NVDA: 'US67066G1040',
+  AMZN: 'US0231351067', GOOGL: 'US02079K3059', TSLA: 'US88160R1014',
+  META: 'US30303M1027', NFLX: 'US64110L1061', ORCL: 'US68389X1054',
+  // Acciones EU
+  ASML: 'NL0010273215', SAP: 'DE0007164600', LVMH: 'FR0000121014',
+  SAN: 'ES0113900J37', IBE: 'ES0144580Y14', ITX: 'ES0148396007',
+};
+
+/* ══════════════════════════════════════════════════════════════
+   MARKET TICKER (índices en tiempo real vía Cloudflare Worker)
+══════════════════════════════════════════════════════════════ */
+interface MarketQuote { key:string; name:string; price:number|null; changePct:number|null; currency?:string }
+
+function MarketTicker() {
+  const [quotes,  setQuotes]  = useState<MarketQuote[]>([]);
+  const [lastTs,  setLastTs]  = useState(0);
+
+  const load = async () => {
+    // Intento 1: Cloudflare Worker en producción (/api/market)
+    try {
+      const res = await fetch('/api/market');
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data?.data)) { setQuotes(data.data); setLastTs(data.ts || Date.now()); return; }
+      }
+    } catch { /* sin CF Worker en dev — silencioso */ }
+
+    // Intento 2: backend local (desarrollo / IP privada)
+    try {
+      const cfg = await getBackendConfig();
+      if (cfg?.url) {
+        const res2 = await fetch(`${cfg.url.replace(/\/$/, '')}/market`);
+        if (res2.ok) {
+          const data2 = await res2.json();
+          if (Array.isArray(data2?.data)) { setQuotes(data2.data); setLastTs(data2.ts || Date.now()); }
+        }
+      }
+    } catch { /* silencioso */ }
+  };
+
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 60_000);
+    return () => clearInterval(t);
+  }, []);
+
+  if (!quotes.length) return null;
+
+  return (
+    <div style={{
+      background:'#07070e', borderBottom:`1px solid ${C.border}22`,
+      display:'flex', alignItems:'center', height:24, padding:'0 14px',
+      gap:0, overflowX:'auto', flexShrink:0, zIndex:9, position:'relative',
+      scrollbarWidth:'none',
+    }}>
+      {quotes.map((q, i) => {
+        if (q.price === null) return null;
+        const up = (q.changePct ?? 0) >= 0;
+        const color = up ? C.green : C.red;
+        const isFx = q.currency === 'FX';
+        const fmtPrice = isFx
+          ? q.price.toFixed(4)
+          : q.price >= 10000
+            ? q.price.toLocaleString('es-ES', { maximumFractionDigits:0 })
+            : q.price.toLocaleString('es-ES', { maximumFractionDigits:2 });
+        return (
+          <div key={q.key} style={{ display:'flex', alignItems:'center', gap:4, padding:'0 10px', borderRight: i < quotes.length-1 ? `1px solid ${C.border}33` : 'none', flexShrink:0 }}>
+            <span style={{ fontSize:'.58em', color:C.faint, fontFamily:"'DM Mono',monospace", letterSpacing:'.3px' }}>{q.name}</span>
+            <span style={{ fontSize:'.63em', color:C.text, fontFamily:"'DM Mono',monospace", fontWeight:500 }}>{fmtPrice}</span>
+            {q.changePct !== null && (
+              <span style={{ fontSize:'.56em', color, fontFamily:"'DM Mono',monospace" }}>
+                {up ? '▲' : '▼'}{Math.abs(q.changePct).toFixed(2)}%
+              </span>
+            )}
+          </div>
+        );
+      })}
+      {lastTs > 0 && (
+        <div style={{ marginLeft:'auto', flexShrink:0, paddingLeft:8 }}>
+          <span style={{ fontSize:'.52em', color:C.faint, fontFamily:"'DM Mono',monospace" }}>
+            {new Date(lastTs).toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit'})}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
 
 /* ══════════════════════════════════════════════════════════════
    ALERT CENTER
@@ -311,6 +420,22 @@ function ChatTab({ profile, portfolio, userProfile }:{ profile:string; portfolio
     });
   }, []);
 
+  // Lee el prefill de sessionStorage (puesto por RebalanceCard al navegar al chat)
+  useEffect(() => {
+    const prefill = sessionStorage.getItem('aurum-chat-prefill');
+    if (prefill) {
+      sessionStorage.removeItem('aurum-chat-prefill');
+      setInput(prefill);
+      requestAnimationFrame(() => {
+        if (taRef.current) {
+          taRef.current.style.height = 'auto';
+          taRef.current.style.height = Math.min(taRef.current.scrollHeight, 120) + 'px';
+          taRef.current.focus();
+        }
+      });
+    }
+  }, []);
+
   useEffect(() => { endRef.current?.scrollIntoView({ behavior:'smooth' }); }, [history, loading]);
 
   const handleFile = (e:React.ChangeEvent<HTMLInputElement>) => {
@@ -328,6 +453,42 @@ function ChatTab({ profile, portfolio, userProfile }:{ profile:string; portfolio
     const txt = raw || (file ? 'Analiza este documento' : '');
     setInput('');
     if (taRef.current) taRef.current.style.height = 'auto';
+
+    // ── Command interception: detect action intent and execute via backend ──
+    if (!file) {
+      const intent = detectActionIntent(txt);
+      if (intent.type !== 'none') {
+        const cfg = await getBackendConfig();
+        if (cfg) {
+          const userDisplayMsg: DisplayMessage = { role:'user', content:txt };
+          const withUser = [...history, userDisplayMsg];
+          setHistory(withUser);
+          setLoading(true);
+          if (intent.type === 'computer') setSearching(true);  // visual feedback for long computer tasks
+          try {
+            const result = await executeCommand(intent, portfolio, profile, userProfile, cfg);
+            const reply = commandResultToMessage(intent, result);
+            // For computer tasks, append screenshot info if available
+            const data = result.data as any;
+            const extra = (intent.type === 'computer' && data?.steps)
+              ? ` *(${data.steps} pasos)*` : '';
+            const assistantMsg: DisplayMessage = {
+              role:'assistant',
+              content: (reply || (result.success ? '✅ Completado.' : `❌ ${result.message}`)) + extra,
+              provider:'anthropic', agent:'aurum',
+            };
+            const finalHist = [...withUser, assistantMsg];
+            setHistory(finalHist);
+            sSet(HIST_KEY_AUTO, finalHist.slice(-MAX_HIST));
+          } catch(e:any) {
+            const errMsg: DisplayMessage = { role:'assistant', content:`⚠️ Error ejecutando comando: ${e?.message||String(e)}`, agent:'aurum' };
+            setHistory([...withUser, errMsg]);
+          } finally { setLoading(false); setSearching(false); }
+          return;  // no llames al chat de IA
+        }
+        // Si no hay backend configurado, continúa normalmente con el chat
+      }
+    }
 
     // Auto-detect which expert to use
     const agentKey = classifyQuery(txt);
@@ -447,6 +608,26 @@ function ChatTab({ profile, portfolio, userProfile }:{ profile:string; portfolio
                 {loadingAgent.name}{activeRoute ? (searching ? ' buscando…' : ' pensando…') : '…'}
               </span>
             </div>
+          </div>
+        )}
+        {/* Quick-action chips — shown only when chat is empty (only welcome message) */}
+        {histLoaded && history.length === 1 && history[0].role === 'assistant' && !loading && (
+          <div style={{ display:'flex', flexWrap:'wrap', gap:8, padding:'4px 0 12px' }}>
+            {([
+              { label:'📊 Analizar mi cartera',   msg:'Analiza mi cartera actual y dame recomendaciones personalizadas' },
+              { label:'🔍 Briefing de mercados',  msg:'Dame un briefing completo de los mercados hoy' },
+              { label:'💡 ¿Qué debería comprar?', msg:'¿Qué activos me recomiendas comprar ahora mismo según mi perfil?' },
+              { label:'⚖️ Evaluar mi riesgo',     msg:'Evalúa el riesgo de mi cartera y dime si estoy sobreexpuesto' },
+              { label:'🧾 Optimización fiscal',   msg:'Analiza mi cartera desde el punto de vista fiscal y ayúdame a optimizar impuestos' },
+              { label:'🧮 Simulador',             msg:'Quiero hacer una simulación de inversión' },
+            ] as { label:string; msg:string }[]).map(chip => (
+              <button key={chip.label} onClick={() => send(chip.msg)}
+                style={{ background:'transparent', border:`1px solid ${C.gold}55`, borderRadius:20, padding:'5px 12px', color:C.goldL, fontSize:'.72em', cursor:'pointer', fontFamily:"'Sora',sans-serif", transition:'all .16s', letterSpacing:'.2px' }}
+                onMouseEnter={e=>{ (e.currentTarget.style.background=`${C.gold}18`); (e.currentTarget.style.borderColor=C.gold); }}
+                onMouseLeave={e=>{ (e.currentTarget.style.background='transparent'); (e.currentTarget.style.borderColor=`${C.gold}55`); }}>
+                {chip.label}
+              </button>
+            ))}
           </div>
         )}
         <div ref={endRef} />
@@ -652,17 +833,259 @@ function ImportModal({ onImport, onClose }:{ onImport:(p:Position[])=>void; onCl
   );
 }
 
+/* ── SellModal ─────────────────────────────────────────────────── */
+function SellModal({ pos, onClose }:{ pos:Position; onClose:()=>void }) {
+  const [amount,   setAmount]   = useState('');
+  const [result,   setResult]   = useState<string|null>(null);
+  const [loading,  setLoading]  = useState(false);
+  const [mode,     setMode]     = useState<'real'|'chat'>(() => {
+    // Si conocemos el ISIN, ofrecer venta real; si no, sugerir chat
+    return ISIN_MAP[pos.ticker.toUpperCase()] ? 'real' : 'chat';
+  });
+
+  const isin = ISIN_MAP[pos.ticker.toUpperCase()];
+  const totalShares = pos.shares;
+  const sellEur = amount === '100%'
+    ? totalShares * pos.currentPrice
+    : (parseFloat(amount) || 0);
+  const sellShares = amount === '100%' ? totalShares : (sellEur / pos.currentPrice) || 0;
+
+  const handleSell = async () => {
+    if (loading) return;
+    setLoading(true); setResult(null);
+    try {
+      const cfg = await getBackendConfig();
+      if (!cfg) {
+        setResult('⚠️ Configura el backend en Ajustes → Servidor para operar en tiempo real.');
+        return;
+      }
+      if (!isin) {
+        setResult(`ℹ️ ISIN de ${pos.ticker} no reconocido. Usa el chat:\n"vende ${amount||'todas las'} acciones de ${pos.ticker}"`);
+        return;
+      }
+
+      const body = {
+        trades: [{
+          ticker: pos.ticker,
+          isin,
+          name:   pos.name,
+          amount: amount === '100%' ? 0 : sellEur,
+          shares: amount === '100%' ? totalShares : 0,
+        }],
+        notify: true,
+      };
+      const res = await backendCall(cfg, '/sell', 'POST', body);
+      const r   = res.results?.[0];
+      if (r?.status === 'executed') {
+        setResult(`✅ Venta ejecutada\nOrden ID: ${r.orderId || '—'}`);
+      } else {
+        setResult(`❌ Error: ${r?.error || 'Respuesta inesperada del broker'}`);
+      }
+    } catch(e:any) {
+      setResult(`❌ ${e?.message || String(e)}`);
+    } finally { setLoading(false); }
+  };
+
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(7,7,14,.82)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:2000 }} onClick={e=>{ if(e.target===e.currentTarget) onClose(); }}>
+      <div style={{ background:C.surf2, border:`1px solid ${C.border2}`, borderRadius:14, padding:'22px 26px', width:380, maxWidth:'94vw', boxShadow:'0 16px 60px #00000099' }}>
+        {/* Header */}
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:16 }}>
+          <div>
+            <span style={{ fontSize:'.6em', letterSpacing:'1.5px', color:C.muted, textTransform:'uppercase' }}>Vender posición</span>
+            <div style={{ display:'flex', alignItems:'center', gap:8, marginTop:3 }}>
+              <span style={{ fontSize:'1.1em', fontWeight:700, color:C.red, fontFamily:"'DM Mono',monospace" }}>{pos.ticker}</span>
+              {isin && <span style={{ fontSize:'.6em', color:C.faint, fontFamily:"'DM Mono',monospace" }}>{isin}</span>}
+              {!isin && <span style={{ fontSize:'.65em', color:'#e8734a', background:'rgba(232,115,74,.12)', padding:'2px 7px', borderRadius:5 }}>ISIN no mapeado</span>}
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background:'transparent', border:'none', color:C.muted, cursor:'pointer', fontSize:'1.1em' }}>✕</button>
+        </div>
+
+        {/* Position info */}
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:8, marginBottom:16 }}>
+          {[
+            { l:'Acciones', v:`${totalShares}` },
+            { l:'Precio actual', v:`${pos.currentPrice.toFixed(2)}€` },
+            { l:'Valor total', v:`${(totalShares*pos.currentPrice).toFixed(0)}€` },
+          ].map(({ l, v }) => (
+            <div key={l} style={{ background:'#0a0a18', borderRadius:8, padding:'8px 10px' }}>
+              <div style={{ fontSize:'.58em', color:C.faint, marginBottom:2 }}>{l}</div>
+              <div style={{ fontSize:'.8em', fontWeight:600, color:C.text, fontFamily:"'DM Mono',monospace" }}>{v}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Mode tabs */}
+        <div style={{ display:'flex', gap:6, marginBottom:14 }}>
+          {[
+            { id:'real', label:'🏦 Venta real', disabled:!isin },
+            { id:'chat', label:'💬 Usar chat',  disabled:false },
+          ].map(t => (
+            <button key={t.id} onClick={()=>!t.disabled&&setMode(t.id as 'real'|'chat')} disabled={t.disabled}
+              style={{ flex:1, padding:'6px 0', borderRadius:8, border:`1px solid ${mode===t.id?C.red+'55':C.border}`, background:mode===t.id?`${C.red}12`:'transparent', color:mode===t.id?C.red:t.disabled?C.faint:C.muted, cursor:t.disabled?'not-allowed':'pointer', fontSize:'.72em', fontFamily:"'Sora',sans-serif", opacity:t.disabled?.45:1 }}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {mode === 'real' ? (
+          <>
+            <div style={{ marginBottom:12 }}>
+              <div style={{ fontSize:'.62em', color:C.muted, marginBottom:5 }}>Importe (€) · "100%" para vender todo</div>
+              <input value={amount} onChange={e=>setAmount(e.target.value)} placeholder="ej: 500 o 100%"
+                style={{ ...inputBase, padding:'9px 12px', fontSize:'.84em' }}
+                onKeyDown={e=>{ if(e.key==='Enter') handleSell(); }} />
+              {sellEur > 0 && (
+                <div style={{ fontSize:'.65em', color:C.faint, marginTop:4 }}>
+                  ≈ {sellShares.toFixed(4)} acc. · {sellEur.toFixed(2)}€
+                </div>
+              )}
+            </div>
+            <div style={{ display:'flex', gap:8 }}>
+              <button onClick={handleSell} disabled={loading||!amount.trim()}
+                style={{ flex:1, padding:'10px', background:loading||!amount.trim()?'#1a1a28':C.red, border:'none', borderRadius:9, color:loading||!amount.trim()?C.muted:'#fff', fontWeight:700, cursor:loading||!amount.trim()?'not-allowed':'pointer', fontSize:'.82em', fontFamily:"'Sora',sans-serif", display:'flex', alignItems:'center', justifyContent:'center', gap:7 }}>
+                {loading ? <><Spinner/> Enviando orden…</> : `Vender ${amount?amount:'—'}`}
+              </button>
+              <button onClick={onClose} style={{ padding:'10px 16px', background:'transparent', border:`1px solid ${C.border}`, borderRadius:9, color:C.muted, cursor:'pointer', fontSize:'.82em', fontFamily:"'Sora',sans-serif" }}>✕</button>
+            </div>
+          </>
+        ) : (
+          <div style={{ background:'#0a0a1a', border:`1px solid ${C.border}`, borderRadius:9, padding:'12px 14px', fontSize:'.75em', color:C.muted, lineHeight:1.7 }}>
+            Escribe en el chat:<br/>
+            <code style={{ color:C.gold, fontFamily:"'DM Mono',monospace" }}>
+              vende {amount||'500'} € de {pos.ticker}
+            </code><br/>
+            AURUM interpretará la orden y la ejecutará con confirmación.
+          </div>
+        )}
+
+        {result && (
+          <div style={{ marginTop:12, padding:'10px 14px', background: result.startsWith('✅')?`${C.green}0a`:'#0a0a18', border:`1px solid ${result.startsWith('✅')?C.green+'33':C.border2}`, borderRadius:9, fontSize:'.76em', color:result.startsWith('✅')?C.green:C.text, lineHeight:1.6, whiteSpace:'pre-line' }}>
+            {result}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ── Feature 1: Tax Harvesting Card ──────────────────────────── */
+function TaxCard({ portfolio }: { portfolio: Position[] }) {
+  const result = taxLossOpportunities(portfolio);
+  if (!result.losers.length) return null;
+  return (
+    <div style={{ background:C.surf2, border:`1px solid ${C.border}`, borderRadius:12, padding:'14px 17px', marginBottom:14 }}>
+      <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:10 }}>
+        <span style={{ fontSize:'.82em', fontWeight:600, color:C.goldL }}>🧾 Tax Harvesting</span>
+        <span style={{ fontSize:'.65em', padding:'2px 8px', borderRadius:20, background:`${C.green}18`, border:`1px solid ${C.green}44`, color:C.green, fontFamily:"'DM Mono',monospace" }}>
+          −{Math.abs(result.total).toLocaleString('es-ES')}€ · ahorra {result.savings.toLocaleString('es-ES')}€ en IRPF
+        </span>
+      </div>
+      <div style={{ display:'flex', flexDirection:'column', gap:5, marginBottom:10 }}>
+        {result.losers.map((l) => (
+          <div key={l.ticker} style={{ display:'flex', alignItems:'center', gap:10, padding:'6px 10px', background:'#0a0a18', borderRadius:8, border:`1px solid ${C.border}` }}>
+            <span style={{ color:C.gold, fontWeight:600, fontFamily:"'DM Mono',monospace", fontSize:'.82em', minWidth:60 }}>{l.ticker}</span>
+            <span style={{ color:C.red, fontFamily:"'DM Mono',monospace", fontSize:'.78em' }}>{l.lossPct}%</span>
+            <span style={{ color:C.red, fontFamily:"'DM Mono',monospace", fontSize:'.78em', marginLeft:'auto' }}>{l.loss.toLocaleString('es-ES')}€</span>
+          </div>
+        ))}
+      </div>
+      <div style={{ fontSize:'.68em', color:C.muted, fontStyle:'italic', lineHeight:1.5 }}>{result.advice}</div>
+    </div>
+  );
+}
+
+/* ── Feature 3: Price Alerts helpers ────────────────────────── */
+interface PriceAlert { ticker: string; above?: number; below?: number; active: boolean; }
+const ALERTS_KEY = 'aurum-price-alerts';
+
+function loadPriceAlerts(): PriceAlert[] {
+  try { const v = localStorage.getItem(ALERTS_KEY); return v ? JSON.parse(v) : []; } catch { return []; }
+}
+function savePriceAlerts(alerts: PriceAlert[]) {
+  try { localStorage.setItem(ALERTS_KEY, JSON.stringify(alerts)); } catch {}
+}
+
 function PortfolioTab({ portfolio, setPortfolio }:{ portfolio:Position[]; setPortfolio:(p:Position[])=>void }) {
   const empty = { ticker:'', name:'', shares:'', avgPrice:'', currentPrice:'' };
   const [form, setForm]       = useState(empty);
   const [adding, setAdding]   = useState(false);
   const [upd, setUpd]         = useState(false);
   const [importing, setImporting] = useState(false);
+  const [lastRefresh, setLastRefresh] = useState<Date|null>(null);
+  const [portHistory, setPortHistory] = useState<{ date:string; value:number }[]>([]);
+  const [sellPos,  setSellPos]  = useState<Position|null>(null);
+  const [trSync,   setTrSync]   = useState<'idle'|'loading'|'ok'|'error'>('idle');
+  const [trSyncMsg, setTrSyncMsg] = useState('');
+  // Feature 3: Price alerts
+  const [priceAlerts, setPriceAlerts] = useState<PriceAlert[]>(() => loadPriceAlerts());
+  const [alertInput,  setAlertInput]  = useState<{ ticker:string; above:string; below:string } | null>(null);
+
+  // Reverse ISIN_MAP para lookup ticker por ISIN (datos vivos de TR)
+  const TICKER_BY_ISIN: Record<string,string> = Object.fromEntries(
+    Object.entries(ISIN_MAP).map(([ticker, isin]) => [isin, ticker])
+  );
+
+  const syncFromTR = async () => {
+    const cfg = await getBackendConfig();
+    if (!cfg) { setTrSyncMsg('Sin backend. Configura en Ajustes.'); setTrSync('error'); return; }
+    setTrSync('loading'); setTrSyncMsg('');
+    try {
+      const data = await backendCall(cfg, '/portfolio');
+      const raw: {isin:string;name:string;shares:number;avg_price:number;current_price:number}[] = data.positions || [];
+      if (!raw.length) { setTrSyncMsg('TR devolvió cartera vacía'); setTrSync('ok'); return; }
+      const imported: Position[] = raw.map((p, i) => ({
+        id:           Date.now() + i,
+        ticker:       TICKER_BY_ISIN[p.isin] || p.isin.slice(0, 6).toUpperCase(),
+        name:         p.name,
+        shares:       p.shares,
+        avgPrice:     p.avg_price,
+        currentPrice: p.current_price,
+      }));
+      await save(imported);
+      setTrSync('ok');
+      setTrSyncMsg(`${imported.length} posiciones sincronizadas de TR`);
+      setLastRefresh(new Date());
+      setTimeout(() => { setTrSync('idle'); setTrSyncMsg(''); }, 5000);
+    } catch(e:any) {
+      setTrSync('error');
+      setTrSyncMsg(e?.message || String(e));
+      setTimeout(() => { setTrSync('idle'); setTrSyncMsg(''); }, 7000);
+    }
+  };
 
   const totalVal  = portfolio.reduce((a,p)=>a+p.shares*p.currentPrice,0);
   const totalCost = portfolio.reduce((a,p)=>a+p.shares*p.avgPrice,0);
   const pnl       = totalVal - totalCost;
   const pnlPct    = totalCost ? pnl/totalCost*100 : 0;
+
+  // Estado de permisos de notificación del navegador
+  const [notifPerm, setNotifPerm] = useState<NotificationPermission>(() =>
+    typeof Notification !== 'undefined' ? Notification.permission : 'denied'
+  );
+  const requestNotifPerm = async () => {
+    if (typeof Notification === 'undefined') return;
+    const p = await Notification.requestPermission();
+    setNotifPerm(p);
+  };
+
+  // Export cartera a CSV
+  const exportCSV = () => {
+    if (!portfolio.length) return;
+    const header = 'Ticker,Nombre,Acciones,P.Compra,P.Actual,P&L EUR,P&L %\n';
+    const rows = portfolio.map(p => {
+      const pnlVal = ((p.currentPrice - p.avgPrice) * p.shares).toFixed(2);
+      const pnlPct = ((p.currentPrice - p.avgPrice) / p.avgPrice * 100).toFixed(2);
+      return `${p.ticker},"${p.name.replace(/"/g,'""')}",${p.shares},${p.avgPrice},${p.currentPrice},${pnlVal},${pnlPct}`;
+    }).join('\n');
+    const blob = new Blob([header + rows], { type: 'text/csv;charset=utf-8;' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url; a.download = `aurum-cartera-${new Date().toISOString().slice(0,10)}.csv`;
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a); URL.revokeObjectURL(url);
+  };
 
   const save = async (updated:Position[]) => { setPortfolio(updated); await sSet('aurum-portfolio', updated); };
   const add  = async () => {
@@ -672,12 +1095,90 @@ function PortfolioTab({ portfolio, setPortfolio }:{ portfolio:Position[]; setPor
   };
   const remove = (id:number) => save(portfolio.filter(p=>p.id!==id));
 
+  // Auto-refresh al montar si hay posiciones (máx cada 5 min para no gastar tokens)
+  useEffect(() => {
+    if (!portfolio.length) return;
+    const doRefresh = async () => {
+      const now = Date.now();
+      const stored = await sGet('aurum-price-refresh-ts');
+      if (stored && now - stored < 5 * 60 * 1000) return; // cooldown 5 min
+      setUpd(true);
+      try {
+        const prices = await nexusPrices(portfolio.map(p => p.ticker));
+        if (prices.length) {
+          const updated = portfolio.map(p => {
+            const f = prices.find(x => x.ticker?.toUpperCase() === p.ticker);
+            return f ? { ...p, currentPrice: f.price } : p;
+          });
+          await save(updated);
+          await sSet('aurum-price-refresh-ts', now);
+          setLastRefresh(new Date());
+        }
+      } catch { /* silencioso */ } finally { setUpd(false); }
+    };
+    doRefresh();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Portfolio value history — snapshot once per day
+  useEffect(() => {
+    const HIST_KEY = 'aurum-portfolio-history';
+    const today = new Date().toISOString().slice(0, 10);
+    sGet(HIST_KEY).then((saved: { date:string; value:number }[] | null) => {
+      const hist: { date:string; value:number }[] = Array.isArray(saved) ? saved : [];
+      setPortHistory(hist.slice(-30));
+      if (hist.length > 0 && hist[hist.length - 1].date === today) return; // already snapshotted today
+      const val = portfolio.reduce((a, p) => a + p.shares * p.currentPrice, 0);
+      if (val === 0) return;
+      const updated = [...hist, { date: today, value: +val.toFixed(2) }].slice(-365);
+      sSet(HIST_KEY, updated);
+      setPortHistory(updated.slice(-30));
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const refreshPrices = async () => {
     if (!portfolio.length) return;
     setUpd(true);
     try {
       const prices = await nexusPrices(portfolio.map(p=>p.ticker));
-      await save(portfolio.map(p => { const f=prices.find(x=>x.ticker?.toUpperCase()===p.ticker); return f?{...p,currentPrice:f.price}:p; }));
+      if (prices.length) {
+        const updated = portfolio.map(p => { const f=prices.find(x=>x.ticker?.toUpperCase()===p.ticker); return f?{...p,currentPrice:f.price}:p; });
+        await save(updated);
+        await sSet('aurum-price-refresh-ts', Date.now());
+        setLastRefresh(new Date());
+        // Feature 3: check price alerts
+        const currentAlerts = loadPriceAlerts();
+        const triggeredAlerts = currentAlerts.filter(a => {
+          const pos = updated.find(p => p.ticker === a.ticker);
+          if (!pos || !a.active) return false;
+          if (a.above !== undefined && pos.currentPrice >= a.above) return true;
+          if (a.below !== undefined && pos.currentPrice <= a.below) return true;
+          return false;
+        });
+        if (triggeredAlerts.length) {
+          triggeredAlerts.forEach(a => {
+            const pos = updated.find(p => p.ticker === a.ticker);
+            if (!pos) return;
+            const body = `${a.ticker} cotiza a ${pos.currentPrice.toFixed(2)}€${a.above !== undefined && pos.currentPrice >= a.above ? ` (superó ${a.above}€)` : ''}${a.below !== undefined && pos.currentPrice <= a.below ? ` (bajó de ${a.below}€)` : ''}`;
+            addAlert({
+              type:     'price_alert' as any,
+              severity: 'warning',
+              title:    `🔔 Alerta de precio: ${a.ticker}`,
+              body,
+              actionable: false,
+            });
+            // Browser notification nativa si el usuario la ha concedido
+            if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+              try { new Notification(`🔔 AURUM · ${a.ticker}`, { body, icon: '/favicon.ico', tag: `price-${a.ticker}` }); } catch {}
+            }
+          });
+          // Deactivate triggered alerts
+          const nextAlerts = currentAlerts.map(a => triggeredAlerts.find(t => t.ticker === a.ticker) ? { ...a, active: false } : a);
+          savePriceAlerts(nextAlerts);
+          setPriceAlerts(nextAlerts);
+        }
+      }
     } finally { setUpd(false); }
   };
 
@@ -694,23 +1195,78 @@ function PortfolioTab({ portfolio, setPortfolio }:{ portfolio:Position[]; setPor
 
   return (
     <div style={{ padding:'18px 20px', overflow:'auto', height:'100%' }}>
+      {portHistory.length >= 2 && (
+        <div style={{ marginBottom:14, padding:'12px 16px', background:C.surf2, border:`1px solid ${C.border}`, borderRadius:12, display:'flex', alignItems:'center', gap:16 }}>
+          <div>
+            <div style={{ fontSize:'.58em', letterSpacing:'1.5px', color:C.muted, textTransform:'uppercase', marginBottom:2 }}>Historial 30d</div>
+            <div style={{ fontSize:'.78em', color:C.goldL, fontFamily:"'DM Mono',monospace" }}>
+              {portHistory.length} días
+            </div>
+          </div>
+          <div style={{ flex:1, minWidth:0 }}>
+            <ResponsiveContainer width="100%" height={120}>
+              <AreaChart data={portHistory} margin={{ top:6, right:4, left:4, bottom:0 }}>
+                <defs>
+                  <linearGradient id="pgGold" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={C.gold} stopOpacity={0.45}/>
+                    <stop offset="100%" stopColor={C.gold} stopOpacity={0.02}/>
+                  </linearGradient>
+                </defs>
+                <Area type="monotone" dataKey="value" stroke={C.gold} strokeWidth={1.5} fill="url(#pgGold)" dot={false} isAnimationActive={false}/>
+                <Tooltip
+                  contentStyle={{ background:C.surf3, border:`1px solid ${C.border}`, borderRadius:8, fontSize:'.7em', color:C.text }}
+                  formatter={(v:any)=>[`${Number(v).toLocaleString('es-ES',{maximumFractionDigits:0})}€`, 'Valor']}
+                  labelStyle={{ color:C.muted, fontSize:'.65em' }}
+                />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, marginBottom:16 }}>
         {statCard('Valor total', fmtEur(totalVal), C.goldL, totalCost?`coste ${fmtEur(totalCost)}`:'sin posiciones')}
         {statCard('P&L total', `${pnl>=0?'+':''}${fmtEur(pnl)}`, pnl>=0?C.green:C.red)}
         {statCard('Rendimiento', `${pnlPct>=0?'+':''}${pnlPct.toFixed(2)}%`, pnlPct>=0?C.green:C.red)}
       </div>
+      {/* Feature 1: Tax Harvesting Card */}
+      <TaxCard portfolio={portfolio} />
       <div style={{ display:'grid', gridTemplateColumns:portfolio.length?'1fr 220px':'1fr', gap:14, alignItems:'start' }}>
         <Card>
           <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'12px 16px', borderBottom:`1px solid ${C.border}` }}>
             <span style={{ fontSize:'.65em', letterSpacing:'1.5px', color:C.muted, textTransform:'uppercase' }}>Posiciones · {portfolio.length}</span>
-            <div style={{ display:'flex', gap:7 }}>
+            <div style={{ display:'flex', gap:6, flexWrap:'wrap', alignItems:'center' }}>
+              {trSyncMsg && (
+                <span style={{ fontSize:'.65em', color:trSync==='ok'?C.green:trSync==='error'?C.red:C.muted }}>
+                  {trSync==='ok'?'✓ ':trSync==='error'?'❌ ':''}{trSyncMsg}
+                </span>
+              )}
+              <button onClick={syncFromTR} disabled={trSync==='loading'}
+                style={{ background:'transparent', border:`1px solid ${C.green}55`, color:trSync==='loading'?C.muted:C.green, borderRadius:7, padding:'4px 10px', cursor:trSync==='loading'?'not-allowed':'pointer', fontSize:'.7em', fontFamily:"'Sora',sans-serif", display:'flex', alignItems:'center', gap:5, transition:'all .15s' }}
+                title="Importar posiciones reales desde Trade Republic (requiere backend autenticado)">
+                {trSync==='loading'?<Spinner/>:'📲'} {trSync==='loading'?'Sincronizando…':'Sincronizar TR'}
+              </button>
               <button onClick={refreshPrices} disabled={!portfolio.length||upd}
                 style={{ background:'transparent', border:`1px solid ${C.border2}`, color:upd?C.muted:C.gold, borderRadius:7, padding:'4px 10px', cursor:'pointer', fontSize:'.7em', fontFamily:"'Sora',sans-serif", display:'flex', alignItems:'center', gap:5 }}>
                 {upd?<Spinner/>:'↻'} {upd?'Actualizando…':'Actualizar precios'}
+                {lastRefresh && !upd && <span style={{ color:C.faint, fontSize:'.85em' }}>· {lastRefresh.toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit'})}</span>}
               </button>
+              {notifPerm === 'default' && (
+                <button onClick={requestNotifPerm}
+                  title="Recibe notificaciones del navegador cuando tus alertas de precio se disparen"
+                  style={{ background:'rgba(201,168,76,.08)', border:`1px solid ${C.gold}33`, color:C.gold, borderRadius:7, padding:'4px 10px', cursor:'pointer', fontSize:'.7em', fontFamily:"'Sora',sans-serif", display:'flex', alignItems:'center', gap:5 }}>
+                  🔔 Activar notif.
+                </button>
+              )}
+              {portfolio.length > 0 && (
+                <button onClick={exportCSV}
+                  title="Descargar cartera como CSV"
+                  style={{ background:'transparent', border:`1px solid ${C.border2}`, color:C.muted, borderRadius:7, padding:'4px 10px', cursor:'pointer', fontSize:'.7em', fontFamily:"'Sora',sans-serif", display:'flex', alignItems:'center', gap:5 }}>
+                  ⬇ CSV
+                </button>
+              )}
               <button onClick={()=>setImporting(true)}
                 style={{ background:'rgba(91,156,246,.1)', border:`1px solid #5b9cf644`, color:C.blue, borderRadius:7, padding:'4px 10px', cursor:'pointer', fontSize:'.7em', fontFamily:"'Sora',sans-serif", display:'flex', alignItems:'center', gap:5 }}>
-                ✨ Importar broker
+                ✨ Importar IA
               </button>
               <button onClick={()=>setAdding(v=>!v)}
                 style={{ background:adding?C.faint+'22':'rgba(201,168,76,.12)', border:`1px solid ${adding?C.border:C.gold+'44'}`, color:adding?C.muted:C.gold, borderRadius:7, padding:'4px 10px', cursor:'pointer', fontSize:'.7em', fontFamily:"'Sora',sans-serif" }}>
@@ -734,24 +1290,98 @@ function PortfolioTab({ portfolio, setPortfolio }:{ portfolio:Position[]; setPor
           {portfolio.length===0
             ? <div style={{ padding:'36px', textAlign:'center', color:C.muted, fontSize:'.82em' }}>Sin posiciones. Añade tus inversiones para hacer seguimiento.</div>
             : <>
-                <div style={{ display:'grid', gridTemplateColumns:'80px 1fr 60px 75px 75px 90px 36px', padding:'7px 16px', fontSize:'.6em', color:C.muted, letterSpacing:'1px', textTransform:'uppercase', borderBottom:`1px solid ${C.border}` }}>
-                  {['Ticker','Nombre','Acc.','P.Compra','P.Actual','P&L',''].map((h,i)=><span key={i}>{h}</span>)}
+                <div style={{ display:'grid', gridTemplateColumns:'80px 1fr 60px 75px 75px 90px 60px 30px 36px', padding:'7px 16px', fontSize:'.6em', color:C.muted, letterSpacing:'1px', textTransform:'uppercase', borderBottom:`1px solid ${C.border}` }}>
+                  {['Ticker','Nombre','Acc.','P.Compra','P.Actual','P&L','','🔔',''].map((h,i)=><span key={i}>{h}</span>)}
                 </div>
                 {portfolio.map(p=>{
                   const pnlVal=(p.currentPrice-p.avgPrice)*p.shares;
                   const pnlP=(p.currentPrice-p.avgPrice)/p.avgPrice*100;
+                  const tickerAlert = priceAlerts.find(a => a.ticker === p.ticker && a.active);
+                  const isEditingAlert = alertInput?.ticker === p.ticker;
                   return (
-                    <div key={p.id} className="pos-row" style={{ display:'grid', gridTemplateColumns:'80px 1fr 60px 75px 75px 90px 36px', padding:'11px 16px', borderBottom:`1px solid ${C.border}22`, fontSize:'.82em', alignItems:'center', transition:'background .15s' }}>
-                      <span style={{ color:C.gold, fontWeight:600, fontFamily:"'DM Mono',monospace" }}>{p.ticker}</span>
-                      <span style={{ color:C.text, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', paddingRight:8 }}>{p.name}</span>
-                      <span style={{ color:C.muted, fontFamily:"'DM Mono',monospace" }}>{p.shares}</span>
-                      <span style={{ color:C.muted, fontFamily:"'DM Mono',monospace" }}>{p.avgPrice}€</span>
-                      <span style={{ color:C.text,  fontFamily:"'DM Mono',monospace" }}>{p.currentPrice}€</span>
-                      <div>
-                        <div style={{ color:pnlVal>=0?C.green:C.red, fontFamily:"'DM Mono',monospace", fontSize:'.9em' }}>{pnlVal>=0?'+':''}{pnlVal.toFixed(0)}€</div>
-                        <div style={{ color:pnlVal>=0?C.green:C.red, fontSize:'.72em', opacity:.75 }}>{pnlP>=0?'+':''}{pnlP.toFixed(1)}%</div>
+                    <div key={p.id}>
+                      <div className="pos-row" style={{ display:'grid', gridTemplateColumns:'80px 1fr 60px 75px 75px 90px 60px 30px 36px', padding:'11px 16px', borderBottom: isEditingAlert ? 'none' : `1px solid ${C.border}22`, fontSize:'.82em', alignItems:'center', transition:'background .15s' }}>
+                        <span style={{ color:C.gold, fontWeight:600, fontFamily:"'DM Mono',monospace" }}>{p.ticker}</span>
+                        <span style={{ color:C.text, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', paddingRight:8 }}>{p.name}</span>
+                        <span style={{ color:C.muted, fontFamily:"'DM Mono',monospace" }}>{p.shares}</span>
+                        <span style={{ color:C.muted, fontFamily:"'DM Mono',monospace" }}>{p.avgPrice}€</span>
+                        <span style={{ color:C.text,  fontFamily:"'DM Mono',monospace" }}>{p.currentPrice}€</span>
+                        <div>
+                          <div style={{ color:pnlVal>=0?C.green:C.red, fontFamily:"'DM Mono',monospace", fontSize:'.9em' }}>{pnlVal>=0?'+':''}{pnlVal.toFixed(0)}€</div>
+                          <div style={{ color:pnlVal>=0?C.green:C.red, fontSize:'.72em', opacity:.75 }}>{pnlP>=0?'+':''}{pnlP.toFixed(1)}%</div>
+                        </div>
+                        <button onClick={()=>setSellPos(p)}
+                          style={{ background:'rgba(224,82,82,.1)', border:`1px solid ${C.red}44`, color:C.red, borderRadius:6, padding:'3px 8px', cursor:'pointer', fontSize:'.68em', fontFamily:"'Sora',sans-serif", transition:'all .15s' }}
+                          onMouseEnter={e=>{ (e.currentTarget.style.background=`rgba(224,82,82,.22)`); }}
+                          onMouseLeave={e=>{ (e.currentTarget.style.background=`rgba(224,82,82,.1)`); }}>
+                          Vender
+                        </button>
+                        {/* Feature 3: Bell alert button */}
+                        <button
+                          title={tickerAlert ? `Alerta activa${tickerAlert.above ? ` >${tickerAlert.above}€` : ''}${tickerAlert.below ? ` <${tickerAlert.below}€` : ''}` : 'Configurar alerta de precio'}
+                          onClick={() => setAlertInput(isEditingAlert ? null : { ticker: p.ticker, above: tickerAlert?.above?.toString() || '', below: tickerAlert?.below?.toString() || '' })}
+                          style={{ background:'transparent', border:'none', cursor:'pointer', fontSize:'.82em', borderRadius:6, padding:3, position:'relative', transition:'opacity .15s' }}>
+                          🔔
+                          {tickerAlert && (
+                            <div style={{ position:'absolute', top:0, right:0, width:7, height:7, borderRadius:'50%', background:'#c9a84c', border:'1px solid #07070e' }} />
+                          )}
+                        </button>
+                        <button onClick={()=>remove(p.id)} style={{ background:'transparent', border:'none', color:'#252540', cursor:'pointer', fontSize:'.9em', borderRadius:6, padding:4, transition:'color .15s' }} onMouseEnter={e=>(e.target as HTMLElement).style.color=C.red} onMouseLeave={e=>(e.target as HTMLElement).style.color='#252540'}>✕</button>
                       </div>
-                      <button onClick={()=>remove(p.id)} style={{ background:'transparent', border:'none', color:'#252540', cursor:'pointer', fontSize:'.9em', borderRadius:6, padding:4, transition:'color .15s' }} onMouseEnter={e=>(e.target as HTMLElement).style.color=C.red} onMouseLeave={e=>(e.target as HTMLElement).style.color='#252540'}>✕</button>
+                      {/* Inline alert config dropdown */}
+                      {isEditingAlert && alertInput && (
+                        <div style={{ padding:'10px 16px', background:'#0a0a1a', borderBottom:`1px solid ${C.border}22`, display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
+                          <span style={{ fontSize:'.68em', color:C.muted }}>Alertar si</span>
+                          <div style={{ display:'flex', alignItems:'center', gap:5 }}>
+                            <span style={{ fontSize:'.66em', color:C.faint }}>sube de</span>
+                            <input
+                              type="number"
+                              value={alertInput.above}
+                              onChange={e => setAlertInput({ ...alertInput, above: e.target.value })}
+                              placeholder="—"
+                              style={{ ...inputBase, width:70, padding:'3px 7px', fontSize:'.74em' }}
+                            />
+                            <span style={{ fontSize:'.66em', color:C.faint }}>€</span>
+                          </div>
+                          <div style={{ display:'flex', alignItems:'center', gap:5 }}>
+                            <span style={{ fontSize:'.66em', color:C.faint }}>o baja de</span>
+                            <input
+                              type="number"
+                              value={alertInput.below}
+                              onChange={e => setAlertInput({ ...alertInput, below: e.target.value })}
+                              placeholder="—"
+                              style={{ ...inputBase, width:70, padding:'3px 7px', fontSize:'.74em' }}
+                            />
+                            <span style={{ fontSize:'.66em', color:C.faint }}>€</span>
+                          </div>
+                          <button
+                            onClick={() => {
+                              const above = alertInput.above ? parseFloat(alertInput.above) : undefined;
+                              const below = alertInput.below ? parseFloat(alertInput.below) : undefined;
+                              const next = priceAlerts.filter(a => a.ticker !== p.ticker);
+                              if (above || below) next.push({ ticker: p.ticker, above, below, active: true });
+                              savePriceAlerts(next);
+                              setPriceAlerts(next);
+                              setAlertInput(null);
+                            }}
+                            style={{ background:C.gold, border:'none', borderRadius:7, padding:'4px 12px', color:'#07070e', fontWeight:600, cursor:'pointer', fontSize:'.72em', fontFamily:"'Sora',sans-serif" }}>
+                            Guardar
+                          </button>
+                          {tickerAlert && (
+                            <button
+                              onClick={() => {
+                                const next = priceAlerts.filter(a => a.ticker !== p.ticker);
+                                savePriceAlerts(next);
+                                setPriceAlerts(next);
+                                setAlertInput(null);
+                              }}
+                              style={{ background:'transparent', border:`1px solid ${C.border2}`, borderRadius:7, padding:'4px 10px', color:C.muted, cursor:'pointer', fontSize:'.72em', fontFamily:"'Sora',sans-serif" }}>
+                              Eliminar
+                            </button>
+                          )}
+                          <button onClick={() => setAlertInput(null)} style={{ background:'transparent', border:'none', color:C.faint, cursor:'pointer', fontSize:'.82em', marginLeft:'auto' }}>✕</button>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -791,6 +1421,7 @@ function PortfolioTab({ portfolio, setPortfolio }:{ portfolio:Position[]; setPor
           }}
         />
       )}
+      {sellPos && <SellModal pos={sellPos} onClose={()=>setSellPos(null)} />}
     </div>
   );
 }
@@ -949,84 +1580,203 @@ function ResearchTab() {
 }
 
 /* ══════════════════════════════════════════════════════════════
-   SIMULATOR TAB
+   SIMULATOR TAB — Monte Carlo + interés compuesto
 ══════════════════════════════════════════════════════════════ */
-function SimulatorTab() {
-  const [initial, setInitial] = useState(10000);
-  const [monthly, setMonthly] = useState(300);
-  const [rate,    setRate]    = useState(7);
-  const [years,   setYears]   = useState(20);
 
-  const data:{ año:number; 'Valor cartera':number; 'Capital aportado':number }[] = [];
-  let balance = initial;
-  for (let y=0; y<=years; y++) {
-    data.push({ año:y, 'Valor cartera':Math.round(balance), 'Capital aportado':Math.round(initial+monthly*12*y) });
-    balance = balance*(1+rate/100)+monthly*12;
+// Genera retorno anual aleatorio con distribución normal (Box-Muller)
+function randNormal(mean: number, std: number): number {
+  const u = 1 - Math.random(), v = Math.random();
+  const z = Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+  return mean + std * z;
+}
+
+// Volatilidades históricas por perfil
+const PROFILE_PARAMS: Record<string, { mean: number; std: number; label: string }> = {
+  conservador: { mean: 0.043, std: 0.055, label: 'Conservador' },
+  moderado:    { mean: 0.073, std: 0.115, label: 'Moderado'    },
+  agresivo:    { mean: 0.099, std: 0.195, label: 'Agresivo'    },
+  custom:      { mean: 0.07,  std: 0.12,  label: 'Personalizado'},
+};
+
+function runMonteCarlo(initial: number, monthly: number, years: number, mean: number, std: number, sims = 1000) {
+  // Devuelve percentiles p10, p50, p90 por año + capital aportado
+  const perYear: number[][] = Array.from({ length: years + 1 }, () => []);
+  for (let s = 0; s < sims; s++) {
+    let bal = initial;
+    perYear[0].push(bal);
+    for (let y = 1; y <= years; y++) {
+      const r = randNormal(mean, std);
+      bal = bal * (1 + r) + monthly * 12;
+      if (bal < 0) bal = 0;
+      perYear[y].push(bal);
+    }
   }
-  const final    = data.at(-1)!['Valor cartera'];
-  const aportado = data.at(-1)!['Capital aportado'];
-  const ganancia = final - aportado;
+  return perYear.map((vals, y) => {
+    const sorted = [...vals].sort((a, b) => a - b);
+    const p = (q: number) => Math.round(sorted[Math.floor(q * (sims - 1))]);
+    return {
+      año: y,
+      'Optimista (p90)':  p(0.90),
+      'Base (p50)':       p(0.50),
+      'Pesimista (p10)':  p(0.10),
+      'Capital aportado': Math.round(initial + monthly * 12 * y),
+    };
+  });
+}
+
+function SimulatorTab() {
+  const [initial,  setInitial]  = useState(10000);
+  const [monthly,  setMonthly]  = useState(300);
+  const [years,    setYears]    = useState(20);
+  const [perfil,   setPerfil]   = useState<'conservador'|'moderado'|'agresivo'|'custom'>('moderado');
+  const [customMean, setCustomMean] = useState(7.0);   // %
+  const [customStd,  setCustomStd]  = useState(12.0);  // %
+  const [mcData,   setMcData]   = useState<ReturnType<typeof runMonteCarlo>>([]);
+  const [running,  setRunning]  = useState(false);
+
+  // Recalcula al cambiar parámetros
+  useEffect(() => {
+    setRunning(true);
+    const timer = setTimeout(() => {
+      const p = perfil === 'custom'
+        ? { mean: customMean / 100, std: customStd / 100 }
+        : PROFILE_PARAMS[perfil];
+      setMcData(runMonteCarlo(initial, monthly, years, p.mean, p.std, 1200));
+      setRunning(false);
+    }, 80);
+    return () => clearTimeout(timer);
+  }, [initial, monthly, years, perfil, customMean, customStd]);
+
+  const last   = mcData.at(-1);
+  const aportado = last?.['Capital aportado'] ?? 0;
+  const base     = last?.['Base (p50)']       ?? 0;
+  const opt      = last?.['Optimista (p90)']  ?? 0;
+  const pes      = last?.['Pesimista (p10)']  ?? 0;
+  const p = PROFILE_PARAMS[perfil];
+
+  const fmt = (v: number) => v >= 1_000_000
+    ? `${(v/1_000_000).toFixed(2)}M€`
+    : v >= 1000 ? `${(v/1000).toFixed(0)}k€` : `${v}€`;
 
   const sliders = [
-    { label:'Capital inicial',       val:initial, set:setInitial, min:0,  max:100000, step:500, fmt:(v:number)=>`${v.toLocaleString('es-ES')}€` },
-    { label:'Aportación mensual',    val:monthly, set:setMonthly, min:0,  max:2000,   step:50,  fmt:(v:number)=>`${v}€/mes` },
-    { label:'Rentabilidad esperada', val:rate,    set:setRate,    min:1,  max:20,     step:.5,  fmt:(v:number)=>`${v}% anual` },
-    { label:'Horizonte temporal',    val:years,   set:setYears,   min:1,  max:40,     step:1,   fmt:(v:number)=>`${v} años` },
-  ];
-  const stats:[string,string,string][] = [
-    ['Capital final',   `${final.toLocaleString('es-ES')}€`,    C.goldL],
-    ['Total aportado',  `${aportado.toLocaleString('es-ES')}€`, C.text],
-    ['Ganancias netas', `+${ganancia.toLocaleString('es-ES')}€`,C.green],
-    ['Multiplicador',   `×${(final/aportado).toFixed(2)}`,      C.blue],
-    ['Retorno total',   `${(ganancia/aportado*100).toFixed(0)}%`,C.purple],
+    { label:'Capital inicial',    val:initial, set:setInitial, min:0,     max:200000, step:500,  fmt:(v:number)=>`${v.toLocaleString('es-ES')}€` },
+    { label:'Aportación mensual', val:monthly, set:setMonthly, min:0,     max:3000,   step:50,   fmt:(v:number)=>`${v}€/mes` },
+    { label:'Horizonte temporal', val:years,   set:setYears,   min:1,     max:40,     step:1,    fmt:(v:number)=>`${v} años` },
   ];
 
   return (
     <div style={{ display:'flex', height:'100%', overflow:'hidden' }}>
-      <div style={{ width:290, flexShrink:0, borderRight:`1px solid ${C.border}`, padding:'22px 18px', display:'flex', flexDirection:'column', gap:20, overflow:'auto', background:C.surf }}>
+      {/* Panel izquierdo */}
+      <div style={{ width:270, flexShrink:0, borderRight:`1px solid ${C.border}`, padding:'18px 16px', display:'flex', flexDirection:'column', gap:16, overflow:'auto', background:C.surf }}>
         <div>
-          <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.12em', fontWeight:600, color:C.goldL, marginBottom:3 }}>Simulador de Cartera</div>
-          <div style={{ fontSize:'.72em', color:C.muted, lineHeight:1.5 }}>Interés compuesto con aportaciones periódicas — calculado localmente, sin IA</div>
+          <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.1em', fontWeight:600, color:C.goldL, marginBottom:2 }}>Monte Carlo</div>
+          <div style={{ fontSize:'.68em', color:C.muted, lineHeight:1.5 }}>1.200 simulaciones · distribución histórica real</div>
         </div>
+
+        {/* Perfil de retorno */}
+        <div>
+          <div style={{ fontSize:'.62em', color:C.muted, marginBottom:6, letterSpacing:'.5px' }}>PERFIL DE RENTABILIDAD</div>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:5 }}>
+            {(['conservador','moderado','agresivo','custom'] as const).map(k => {
+              const pp = PROFILE_PARAMS[k];
+              const active = perfil === k;
+              return (
+                <button key={k} onClick={() => setPerfil(k)} style={{
+                  padding:'7px 6px', borderRadius:7, cursor:'pointer', textAlign:'center',
+                  background: active ? `${C.gold}22` : C.surf2,
+                  border:`1px solid ${active ? C.gold+'66' : C.border}`,
+                  color: active ? C.gold : C.muted, fontSize:'.65em',
+                }}>
+                  {pp.label}<br/>
+                  <span style={{ fontSize:'.85em', color:C.faint }}>
+                    {k === 'custom' ? '✏️' : `μ${(pp.mean*100).toFixed(1)}% σ${(pp.std*100).toFixed(0)}%`}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          {perfil === 'custom' && (
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:6, marginTop:8 }}>
+              <div>
+                <div style={{ fontSize:'.6em', color:C.muted, marginBottom:3 }}>Retorno medio %</div>
+                <input type="number" value={customMean} onChange={e=>setCustomMean(+e.target.value)} min={-5} max={30} step={0.5}
+                  style={{ ...{background:C.surf2,border:`1px solid ${C.border2}`,borderRadius:7,padding:'5px 8px',color:C.text,fontSize:'.8em',width:'100%'} }} />
+              </div>
+              <div>
+                <div style={{ fontSize:'.6em', color:C.muted, marginBottom:3 }}>Volatilidad %</div>
+                <input type="number" value={customStd} onChange={e=>setCustomStd(+e.target.value)} min={1} max={60} step={1}
+                  style={{ ...{background:C.surf2,border:`1px solid ${C.border2}`,borderRadius:7,padding:'5px 8px',color:C.text,fontSize:'.8em',width:'100%'} }} />
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Sliders */}
         {sliders.map(s=>(
           <div key={s.label}>
-            <div style={{ display:'flex', justifyContent:'space-between', marginBottom:8 }}>
-              <span style={{ fontSize:'.72em', color:C.muted }}>{s.label}</span>
-              <span style={{ fontSize:'.78em', color:C.gold, fontFamily:"'DM Mono',monospace" }}>{s.fmt(s.val)}</span>
+            <div style={{ display:'flex', justifyContent:'space-between', marginBottom:6 }}>
+              <span style={{ fontSize:'.7em', color:C.muted }}>{s.label}</span>
+              <span style={{ fontSize:'.75em', color:C.gold, fontFamily:"'DM Mono',monospace" }}>{s.fmt(s.val)}</span>
             </div>
             <input type="range" min={s.min} max={s.max} step={s.step} value={s.val} onChange={e=>s.set(+e.target.value)} style={{ width:'100%' }} />
           </div>
         ))}
+
+        {/* Resultados */}
         <div style={{ background:C.surf2, border:`1px solid ${C.border}`, borderRadius:11, overflow:'hidden' }}>
-          {stats.map(([l,v,c])=>(
-            <div key={l} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'9px 14px', borderBottom:`1px solid ${C.border}22` }}>
-              <span style={{ fontSize:'.73em', color:C.muted }}>{l}</span>
-              <span style={{ fontSize:'.82em', fontWeight:600, color:c, fontFamily:"'DM Mono',monospace" }}>{v}</span>
+          {[
+            ['🎯 Escenario base (p50)',    fmt(base),           C.goldL],
+            ['🚀 Optimista (p90)',         fmt(opt),            C.green],
+            ['🛡️ Pesimista (p10)',         fmt(pes),            C.red],
+            ['💶 Total aportado',          fmt(aportado),       C.text],
+            ['📈 Ganancia base',           `+${fmt(base-aportado)}`, C.green],
+            ['×  Multiplicador base',     `×${(base/Math.max(aportado,1)).toFixed(2)}`, C.blue],
+          ].map(([l,v,c])=>(
+            <div key={l as string} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'8px 12px', borderBottom:`1px solid ${C.border}22` }}>
+              <span style={{ fontSize:'.68em', color:C.muted }}>{l}</span>
+              <span style={{ fontSize:'.78em', fontWeight:600, color:c as string, fontFamily:"'DM Mono',monospace" }}>{v}</span>
             </div>
           ))}
         </div>
-        <div style={{ fontSize:'.63em', color:C.faint, lineHeight:1.5 }}>⚠️ Simulación orientativa. No incluye impuestos, inflación ni comisiones.</div>
+        <div style={{ fontSize:'.6em', color:C.faint, lineHeight:1.5 }}>
+          μ={perfil==='custom'?customMean.toFixed(1):(p.mean*100).toFixed(1)}% σ={perfil==='custom'?customStd.toFixed(0):(p.std*100).toFixed(0)}% · Sin impuestos ni inflación.
+        </div>
       </div>
-      <div style={{ flex:1, padding:'22px 20px', display:'flex', flexDirection:'column', overflow:'hidden' }}>
-        <div style={{ fontSize:'.62em', letterSpacing:'2px', color:C.muted, textTransform:'uppercase', marginBottom:16 }}>Proyección · {years} años</div>
+
+      {/* Gráfico */}
+      <div style={{ flex:1, padding:'18px 16px', display:'flex', flexDirection:'column', overflow:'hidden' }}>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
+          <div style={{ fontSize:'.62em', letterSpacing:'2px', color:C.muted, textTransform:'uppercase' }}>
+            Proyección probabilística · {years} años {running ? '⏳' : ''}
+          </div>
+          <div style={{ display:'flex', gap:12, fontSize:'.62em' }}>
+            <span style={{ color:C.green }}>■ p90 optimista</span>
+            <span style={{ color:C.gold  }}>■ p50 base</span>
+            <span style={{ color:C.red   }}>■ p10 pesimista</span>
+            <span style={{ color:C.blue  }}>■ aportado</span>
+          </div>
+        </div>
         <div style={{ flex:1, minHeight:0 }}>
           <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={data} margin={{ top:10, right:20, left:10, bottom:0 }}>
+            <AreaChart data={mcData} margin={{ top:10, right:20, left:10, bottom:0 }}>
               <defs>
-                <linearGradient id="gGold" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor={C.gold} stopOpacity={.35}/><stop offset="95%" stopColor={C.gold} stopOpacity={.02}/>
-                </linearGradient>
-                <linearGradient id="gBlue" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor={C.blue} stopOpacity={.22}/><stop offset="95%" stopColor={C.blue} stopOpacity={.01}/>
-                </linearGradient>
+                <linearGradient id="gOpt"  x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={C.green} stopOpacity={.18}/><stop offset="95%" stopColor={C.green} stopOpacity={.01}/></linearGradient>
+                <linearGradient id="gBase" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={C.gold}  stopOpacity={.35}/><stop offset="95%" stopColor={C.gold}  stopOpacity={.02}/></linearGradient>
+                <linearGradient id="gPes"  x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={C.red}   stopOpacity={.18}/><stop offset="95%" stopColor={C.red}   stopOpacity={.01}/></linearGradient>
+                <linearGradient id="gBlue" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={C.blue}  stopOpacity={.22}/><stop offset="95%" stopColor={C.blue}  stopOpacity={.01}/></linearGradient>
               </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="#161626"/>
-              <XAxis dataKey="año" stroke={C.muted} tick={{ fontSize:11, fill:C.muted }} tickFormatter={(v:number)=>`A${v}`}/>
-              <YAxis stroke={C.muted} tick={{ fontSize:11, fill:C.muted }} tickFormatter={(v:number)=>v>=1000?`${(v/1000).toFixed(0)}k€`:`${v}€`}/>
-              <Tooltip contentStyle={{ background:C.surf3, border:`1px solid ${C.border}`, borderRadius:9, fontSize:'.78em' }} formatter={(v:any)=>[`${v.toLocaleString('es-ES')}€`]} labelFormatter={(v:any)=>`Año ${v}`}/>
-              <Legend wrapperStyle={{ fontSize:'.74em', color:C.muted, paddingTop:8 }}/>
-              <Area type="monotone" dataKey="Capital aportado" stroke={C.blue} strokeWidth={1.5} fill="url(#gBlue)"/>
-              <Area type="monotone" dataKey="Valor cartera"    stroke={C.gold} strokeWidth={2.5} fill="url(#gGold)"/>
+              <XAxis dataKey="año" stroke={C.muted} tick={{ fontSize:10, fill:C.muted }} tickFormatter={(v:number)=>`A${v}`}/>
+              <YAxis stroke={C.muted} tick={{ fontSize:10, fill:C.muted }} tickFormatter={(v:number)=>fmt(v)} width={58}/>
+              <Tooltip
+                contentStyle={{ background:C.surf3, border:`1px solid ${C.border}`, borderRadius:9, fontSize:'.75em' }}
+                formatter={(v:unknown) => [`${fmt(v as number)}`]}
+                labelFormatter={(v:unknown) => `Año ${v}`}
+              />
+              <Area type="monotone" dataKey="Capital aportado" stroke={C.blue}  strokeWidth={1.5} fill="url(#gBlue)" strokeDasharray="4 2"/>
+              <Area type="monotone" dataKey="Pesimista (p10)"  stroke={C.red}   strokeWidth={1}   fill="url(#gPes)"/>
+              <Area type="monotone" dataKey="Base (p50)"       stroke={C.gold}  strokeWidth={2.5} fill="url(#gBase)"/>
+              <Area type="monotone" dataKey="Optimista (p90)"  stroke={C.green} strokeWidth={1}   fill="url(#gOpt)"/>
             </AreaChart>
           </ResponsiveContainer>
         </div>
@@ -1078,11 +1828,196 @@ function TradeRow({ trade }:{ trade: import('./nexus/advisor').TradeItem }) {
   );
 }
 
-function InvestTab({ profile, portfolio, setPortfolio, userProfile }:{
+/* ── Feature 2: Rebalance Card ────────────────────────────────── */
+function RebalanceCard({ portfolio, profile, onNavigate }: {
+  portfolio: Position[];
+  profile: string;
+  onNavigate: (tab: string) => void;
+}) {
+  const drift = detectDrift(portfolio, profile);
+  if (!drift.needsRebal) {
+    return (
+      <div style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 14px', background:`${C.green}0a`, border:`1px solid ${C.green}33`, borderRadius:9, fontSize:'.74em', color:C.green }}>
+        <span>✓</span>
+        <span>Cartera alineada con el perfil</span>
+      </div>
+    );
+  }
+  const bars: { label:string; current:number; target:number; color:string }[] = [
+    { label:'RV',  current:drift.current.rv,  target:drift.target.rv,  color:C.gold   },
+    { label:'RF',  current:drift.current.rf,  target:drift.target.rf,  color:C.blue   },
+    { label:'Alt', current:drift.current.alt, target:drift.target.alt, color:C.purple },
+  ];
+  return (
+    <div style={{ background:C.surf2, border:`1px solid ${C.border}`, borderRadius:12, padding:'14px 17px' }}>
+      <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:12 }}>
+        <span style={{ fontSize:'.82em', fontWeight:600, color:C.goldL }}>⚖️ Rebalanceo necesario</span>
+        <span style={{ fontSize:'.65em', padding:'2px 8px', borderRadius:20, background:`${C.red}18`, border:`1px solid ${C.red}44`, color:C.red, fontFamily:"'DM Mono',monospace" }}>
+          desviación {drift.driftPct}%
+        </span>
+      </div>
+      <div style={{ display:'flex', flexDirection:'column', gap:8, marginBottom:12 }}>
+        {bars.map(b => (
+          <div key={b.label} style={{ display:'flex', alignItems:'center', gap:10 }}>
+            <span style={{ fontSize:'.68em', color:C.muted, minWidth:22 }}>{b.label}</span>
+            <div style={{ flex:1, position:'relative', height:8, background:C.border, borderRadius:4, overflow:'hidden' }}>
+              {/* Target marker */}
+              <div style={{ position:'absolute', top:0, bottom:0, left:`${b.target}%`, width:2, background:`${b.color}66`, borderRadius:1 }} />
+              {/* Current fill */}
+              <div style={{ height:'100%', width:`${b.current}%`, background:b.color, borderRadius:4, transition:'width .5s ease', opacity:.85 }} />
+            </div>
+            <span style={{ fontSize:'.68em', fontFamily:"'DM Mono',monospace", color:b.color, minWidth:60, textAlign:'right' }}>
+              {b.current}% → {b.target}%
+            </span>
+          </div>
+        ))}
+      </div>
+      <button
+        onClick={() => {
+          // Pre-rellena el chat con contexto exacto de la desviación
+          const msg = `Necesito rebalancear mi cartera. Actualmente tengo RV:${drift.current.rv}% · RF:${drift.current.rf}% · Alt:${drift.current.alt}%, pero mi perfil requiere RV:${drift.target.rv}% · RF:${drift.target.rf}% · Alt:${drift.target.alt}%. ¿Qué ETFs debo comprar o vender para corregirlo? Dime importes concretos.`;
+          sessionStorage.setItem('aurum-chat-prefill', msg);
+          onNavigate('chat');
+        }}
+        style={{ width:'100%', padding:'8px', background:`${C.gold}18`, border:`1px solid ${C.gold}44`, borderRadius:9, color:C.goldL, cursor:'pointer', fontSize:'.78em', fontFamily:"'Sora',sans-serif", fontWeight:600, transition:'all .16s' }}
+        onMouseEnter={e=>{ e.currentTarget.style.background=`${C.gold}30`; }}
+        onMouseLeave={e=>{ e.currentTarget.style.background=`${C.gold}18`; }}>
+        💬 Generar plan de rebalanceo con AURUM
+      </button>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════
+   WATCHLIST
+══════════════════════════════════════════════════════════════ */
+const WATCHLIST_KEY = 'aurum-watchlist';
+
+function WatchlistCard() {
+  const [tickers, setTickers] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem(WATCHLIST_KEY) || '[]'); } catch { return []; }
+  });
+  const [prices,  setPrices]  = useState<Record<string, { price:number; changePct:number }>>({});
+  const [input,   setInput]   = useState('');
+  const [loading, setLoading] = useState(false);
+  const [open,    setOpen]    = useState(true);
+
+  const fetchPrices = async () => {
+    if (!tickers.length) return;
+    setLoading(true);
+    try {
+      const result = await nexusPrices(tickers);
+      const map: Record<string, { price:number; changePct:number }> = {};
+      result.forEach(r => { if (r.ticker) map[r.ticker.toUpperCase()] = { price: r.price, changePct: (r as any).changePct ?? 0 }; });
+      setPrices(map);
+    } catch { /* silencioso */ } finally { setLoading(false); }
+  };
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { fetchPrices(); const t = setInterval(fetchPrices, 120_000); return () => clearInterval(t); }, [tickers.join(',')]);
+
+  const add = () => {
+    const t = input.trim().toUpperCase();
+    if (!t || tickers.includes(t)) { setInput(''); return; }
+    const next = [...tickers, t];
+    setTickers(next);
+    localStorage.setItem(WATCHLIST_KEY, JSON.stringify(next));
+    setInput('');
+  };
+  const rem = (t: string) => {
+    const next = tickers.filter(x => x !== t);
+    setTickers(next);
+    setPrices(prev => { const n = { ...prev }; delete n[t]; return n; });
+    localStorage.setItem(WATCHLIST_KEY, JSON.stringify(next));
+  };
+
+  return (
+    <Card>
+      {/* Header */}
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'10px 14px', borderBottom: open && tickers.length ? `1px solid ${C.border}` : 'none', cursor:'pointer' }} onClick={()=>setOpen(v=>!v)}>
+        <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+          <span style={{ fontSize:'.65em', letterSpacing:'1.5px', color:C.muted, textTransform:'uppercase' }}>Watchlist</span>
+          {tickers.length > 0 && <span style={{ fontSize:'.6em', color:C.faint, fontFamily:"'DM Mono',monospace" }}>{tickers.length}</span>}
+        </div>
+        <div style={{ display:'flex', alignItems:'center', gap:8 }} onClick={e=>e.stopPropagation()}>
+          {loading && <Spinner />}
+          {tickers.length > 0 && !loading && (
+            <button onClick={fetchPrices} title="Actualizar precios"
+              style={{ background:'transparent', border:`1px solid ${C.border2}`, color:C.muted, borderRadius:6, padding:'3px 8px', cursor:'pointer', fontSize:'.68em', fontFamily:"'Sora',sans-serif" }}>
+              ↻
+            </button>
+          )}
+          <span style={{ color:C.faint, fontSize:'.7em' }}>{open ? '▲' : '▼'}</span>
+        </div>
+      </div>
+
+      {open && (
+        <div style={{ padding:'10px 14px' }}>
+          {/* Ticker rows */}
+          {tickers.length > 0 && (
+            <div style={{ display:'flex', flexDirection:'column', gap:5, marginBottom:10 }}>
+              {tickers.map(t => {
+                const q = prices[t];
+                const up = q && q.changePct >= 0;
+                return (
+                  <div key={t} style={{ display:'flex', alignItems:'center', gap:10, padding:'7px 10px', background:'#0a0a18', borderRadius:8, border:`1px solid ${C.border}` }}>
+                    <span style={{ color:C.gold, fontWeight:600, fontFamily:"'DM Mono',monospace", fontSize:'.82em', minWidth:56 }}>{t}</span>
+                    {q ? (
+                      <>
+                        <span style={{ color:C.text, fontFamily:"'DM Mono',monospace", fontSize:'.82em' }}>
+                          {q.price >= 1000
+                            ? q.price.toLocaleString('es-ES', { maximumFractionDigits:0 })
+                            : q.price.toLocaleString('es-ES', { minimumFractionDigits:2, maximumFractionDigits:2 })}€
+                        </span>
+                        <span style={{ color:up?C.green:C.red, fontFamily:"'DM Mono',monospace", fontSize:'.75em', marginLeft:'auto' }}>
+                          {up ? '▲' : '▼'}{Math.abs(q.changePct).toFixed(2)}%
+                        </span>
+                      </>
+                    ) : (
+                      <span style={{ color:C.faint, fontSize:'.75em', marginLeft:'auto' }}>—</span>
+                    )}
+                    <button onClick={()=>rem(t)} title="Quitar de watchlist"
+                      style={{ background:'transparent', border:'none', color:C.faint, cursor:'pointer', fontSize:'.8em', padding:'2px 4px', borderRadius:4, transition:'color .15s', marginLeft: q ? 0 : 'auto' }}
+                      onMouseEnter={e=>(e.currentTarget.style.color=C.red)} onMouseLeave={e=>(e.currentTarget.style.color=C.faint)}>
+                      ✕
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Add input */}
+          <div style={{ display:'flex', gap:8 }}>
+            <input
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && add()}
+              placeholder="Añadir ticker (VWCE, AAPL, BTC-EUR…)"
+              style={{ ...inputBase, fontSize:'.78em' }}
+            />
+            <button onClick={add}
+              style={{ background: input.trim() ? C.gold : C.faint, border:'none', borderRadius:8, padding:'6px 14px', color:'#07070e', fontWeight:600, cursor: input.trim() ? 'pointer' : 'default', fontSize:'.78em', fontFamily:"'Sora',sans-serif", flexShrink:0, transition:'background .15s' }}>
+              +
+            </button>
+          </div>
+          {tickers.length === 0 && (
+            <div style={{ fontSize:'.68em', color:C.faint, marginTop:8, lineHeight:1.5 }}>
+              Sigue tickers sin tenerlos en cartera. Precio actualizado cada 2 min.
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function InvestTab({ profile, portfolio, setPortfolio, userProfile, onNavigate }:{
   profile: string;
   portfolio: Position[];
   setPortfolio: (p: Position[]) => void;
   userProfile: UserProfile;
+  onNavigate: (tab: string) => void;
 }) {
   const [capital,    setCapital]    = useState('');
   const [phase,      setPhase]      = useState<InvestPhase>('idle');
@@ -1205,6 +2140,14 @@ function InvestTab({ profile, portfolio, setPortfolio, userProfile }:{
             </Card>
           );
         })()}
+
+        {/* Feature 2: Rebalance Card */}
+        {portfolio.length > 0 && (phase === 'idle' || phase === 'loading') && (
+          <RebalanceCard portfolio={portfolio} profile={profile} onNavigate={onNavigate} />
+        )}
+
+        {/* Watchlist */}
+        {(phase === 'idle' || phase === 'loading') && <WatchlistCard />}
 
         {/* Input */}
         {(phase === 'idle' || phase === 'loading') && (
@@ -1466,6 +2409,25 @@ function BackendSection() {
           </div>
         )}
       </div>
+
+      {/* Local Agent setup */}
+      <div style={{ marginTop:18 }}>
+        <div style={{ fontSize:'.72em', color:C.goldL, fontWeight:700, marginBottom:8, letterSpacing:'.5px' }}>🖥️ AGENTE LOCAL (control de tu PC)</div>
+        <div style={{ fontSize:'.7em', color:C.muted, marginBottom:10, lineHeight:1.5 }}>
+          Para que AURUM controle aplicaciones y navegadores <strong style={{ color:C.text }}>directamente en tu ordenador</strong>, ejecuta este script en tu PC:
+        </div>
+        <div style={{ background:'#0a0a1a', border:`1px solid ${C.border}`, borderRadius:8, padding:'10px 14px', fontSize:'.68em', fontFamily:"'DM Mono',monospace", color:'#8ad8a8', lineHeight:1.8 }}>
+          <span style={{ color:C.faint }}># 1. Instalar dependencias (solo la primera vez)</span><br/>
+          pip install pyautogui mss pillow httpx<br/><br/>
+          <span style={{ color:C.faint }}># 2. Lanzar el agente</span><br/>
+          python local_agent.py \<br/>
+          {'  '}--server <span style={{ color:C.gold }}>{url || 'http://TU-BACKEND:8000'}</span> \<br/>
+          {'  '}--key <span style={{ color:C.gold }}>{apiKey ? '••••••' : 'TU_API_KEY'}</span>
+        </div>
+        <div style={{ fontSize:'.65em', color:C.faint, marginTop:6 }}>
+          El agente corre en segundo plano y permite a AURUM hacer screenshots, clics, escribir texto y abrir apps en tu PC.
+        </div>
+      </div>
     </div>
   );
 }
@@ -1650,6 +2612,249 @@ function AutonomousSection() {
   );
 }
 
+/* ══════════════════════════════════════════════════════════════
+   CONTROL TAB — Computer-use: navegador + agente local
+══════════════════════════════════════════════════════════════ */
+function ControlTab() {
+  const [task,       setTask]       = useState('');
+  const [url,        setUrl]        = useState('');
+  const [running,    setRunning]    = useState(false);
+  const [result,     setResult]     = useState<ComputerTaskResult|null>(null);
+  const [mode,       setMode]       = useState<'browser'|'local'>('browser');
+  const [agentOnline,setAgentOnline]= useState<boolean|null>(null);
+  const [history,    setHistory]    = useState<Array<{task:string;ok:boolean;result:string;ts:number}>>([]);
+
+  useEffect(() => {
+    getBackendConfig().then(cfg => {
+      if (!cfg) { setAgentOnline(false); return; }
+      getAgentStatus(cfg).then(s => setAgentOnline(s.connected));
+    });
+  }, []);
+
+  const run = async () => {
+    if (!task.trim() || running) return;
+    const cfg = await getBackendConfig();
+    if (!cfg) { alert('Configura el backend en Ajustes primero.'); return; }
+    setRunning(true); setResult(null);
+    try {
+      const r = mode === 'browser'
+        ? await runBrowserTask(task, url, cfg)
+        : await runLocalAgentTask(task, cfg);
+      setResult(r);
+      setHistory(h => [{ task, ok: r.success, result: r.result, ts: Date.now() }, ...h].slice(0, 20));
+    } catch(e:any) {
+      setResult({ success: false, result: e?.message || String(e) });
+    } finally { setRunning(false); }
+  };
+
+  const PRESETS = [
+    { label:'📊 Saldo Revolut', task:'Navega a revolut.com/app, inicia sesión y extrae mi saldo actual', url:'https://app.revolut.com/start' },
+    { label:'💶 Transferir 50€', task:'Transfiere 50€ a mi contacto habitual', url:'https://app.revolut.com/start' },
+    { label:'📈 Saldo N26', task:'Inicia sesión en N26 y extrae mi saldo y últimas transacciones', url:'https://app.n26.com/login' },
+    { label:'🏦 Saldo Banco', task:'Accede a mi banca online y extrae el saldo de mis cuentas', url:'' },
+    { label:'📱 Captura pantalla', task:'Toma una screenshot del escritorio actual', url:'' },
+    { label:'💻 Apps abiertas', task:'Lista qué aplicaciones están abiertas ahora mismo', url:'' },
+  ];
+
+  return (
+    <div style={{ padding:'16px', overflowY:'auto', height:'100%' }}>
+      <div style={{ marginBottom:16 }}>
+        <div style={{ fontSize:'.68em', color:C.gold, letterSpacing:'1px', fontWeight:700, marginBottom:4 }}>CONTROL DE PC / NAVEGADOR</div>
+        <div style={{ fontSize:'.72em', color:C.muted }}>AURUM controla tu ordenador y aplicaciones financieras de forma autónoma.</div>
+      </div>
+
+      {/* Mode selector */}
+      <div style={{ display:'flex', gap:8, marginBottom:14 }}>
+        {(['browser','local'] as const).map(m => (
+          <button key={m} onClick={() => setMode(m)} style={{
+            flex:1, padding:'8px 0', borderRadius:8,
+            background: mode===m ? `${C.gold}22` : C.surf2,
+            border:`1px solid ${mode===m ? C.gold : C.border}`,
+            color: mode===m ? C.gold : C.muted, fontSize:'.72em', cursor:'pointer',
+          }}>
+            {m === 'browser' ? '🌐 Navegador (servidor)' : '🖥️ PC local'}
+            {m === 'local' && (
+              <span style={{ marginLeft:6, color: agentOnline ? C.green : C.red, fontSize:'.85em' }}>
+                {agentOnline === null ? '…' : agentOnline ? '● online' : '● offline'}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {mode === 'local' && !agentOnline && (
+        <div style={{ padding:'10px 12px', background:`${C.red}18`, border:`1px solid ${C.red}40`, borderRadius:8, fontSize:'.72em', color:C.red, marginBottom:12 }}>
+          ⚠️ Agente local no conectado. Ejecuta en tu PC:<br/>
+          <code style={{ fontSize:'.9em' }}>python local_agent.py --server URL --key API_KEY</code>
+        </div>
+      )}
+
+      {/* Task input */}
+      <div style={{ marginBottom:10 }}>
+        <textarea
+          value={task}
+          onChange={e => setTask(e.target.value)}
+          placeholder="Describe qué quieres que AURUM haga en tu PC o navegador..."
+          rows={3}
+          style={{ width:'100%', padding:'10px', background:C.surf2, border:`1px solid ${C.border}`, borderRadius:8, color:C.text, fontSize:'.78em', resize:'vertical' }}
+        />
+      </div>
+
+      {mode === 'browser' && (
+        <input
+          value={url}
+          onChange={e => setUrl(e.target.value)}
+          placeholder="URL de inicio (opcional, ej: https://app.revolut.com)"
+          style={{ width:'100%', padding:'8px 10px', background:C.surf2, border:`1px solid ${C.border}`, borderRadius:8, color:C.text, fontSize:'.75em', marginBottom:10 }}
+        />
+      )}
+
+      <button
+        onClick={run}
+        disabled={!task.trim() || running || (mode === 'local' && !agentOnline)}
+        style={{
+          width:'100%', padding:'11px', borderRadius:8,
+          background: running ? C.surf3 : C.gold, color: running ? C.muted : '#000',
+          border:'none', fontWeight:700, fontSize:'.8em', cursor:'pointer', marginBottom:14,
+        }}
+      >
+        {running ? '⏳ Ejecutando…' : '▶ Ejecutar tarea'}
+      </button>
+
+      {/* Presets */}
+      <div style={{ marginBottom:14 }}>
+        <div style={{ fontSize:'.65em', color:C.muted, marginBottom:6 }}>ACCIONES RÁPIDAS</div>
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:6 }}>
+          {PRESETS.map(p => (
+            <button key={p.label} onClick={() => { setTask(p.task); setUrl(p.url); setMode(p.url ? 'browser' : 'local'); }}
+              style={{ padding:'8px', background:C.surf2, border:`1px solid ${C.border}`, borderRadius:7, color:C.text, fontSize:'.68em', cursor:'pointer', textAlign:'left' }}>
+              {p.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Result */}
+      {result && (
+        <div style={{ padding:'12px', background: result.success ? `${C.green}12` : `${C.red}12`, border:`1px solid ${result.success ? C.green : C.red}40`, borderRadius:8, marginBottom:14 }}>
+          <div style={{ fontSize:'.68em', color: result.success ? C.green : C.red, fontWeight:700, marginBottom:6 }}>
+            {result.success ? '✅ COMPLETADO' : '❌ ERROR'} {result.steps ? `· ${result.steps} pasos` : ''}
+          </div>
+          <div style={{ fontSize:'.74em', color:C.text, whiteSpace:'pre-wrap', lineHeight:1.5 }}>{result.result}</div>
+          {result.screenshot_b64 && (
+            <img src={`data:image/png;base64,${result.screenshot_b64}`} alt="screenshot"
+              style={{ width:'100%', borderRadius:6, marginTop:10, border:`1px solid ${C.border}` }} />
+          )}
+        </div>
+      )}
+
+      {/* History */}
+      {history.length > 0 && (
+        <div>
+          <div style={{ fontSize:'.65em', color:C.muted, marginBottom:6 }}>HISTORIAL</div>
+          {history.map((h,i) => (
+            <div key={i} style={{ padding:'7px 10px', background:C.surf2, border:`1px solid ${C.border}`, borderRadius:7, marginBottom:6 }}>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:3 }}>
+                <span style={{ fontSize:'.65em', color: h.ok ? C.green : C.red }}>{h.ok ? '✅' : '❌'} {h.task.slice(0,50)}</span>
+                <span style={{ fontSize:'.6em', color:C.faint }}>{new Date(h.ts).toLocaleTimeString('es-ES')}</span>
+              </div>
+              <div style={{ fontSize:'.68em', color:C.muted }}>{h.result.slice(0,120)}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════
+   VERSION CARD + OTA CHECKER
+══════════════════════════════════════════════════════════════ */
+interface LatestJson {
+  version: string;
+  build: string;
+  apkUrl: string;
+  changelog: string[];
+}
+
+function VersionCard() {
+  const [latest,   setLatest]   = useState<LatestJson | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [checked,  setChecked]  = useState(false);
+
+  const check = async () => {
+    setChecking(true);
+    try {
+      // Intenta /latest.json desde Cloudflare Pages o local
+      const urls = ['/latest.json', 'https://aurum-7cm.pages.dev/latest.json'];
+      for (const url of urls) {
+        try {
+          const res = await fetch(url + '?t=' + Date.now());
+          if (res.ok) { setLatest(await res.json()); break; }
+        } catch { /* silencioso */ }
+      }
+    } finally { setChecking(false); setChecked(true); }
+  };
+
+  useEffect(() => { check(); }, []);
+
+  const hasUpdate = latest && latest.version !== APP_VERSION;
+
+  return (
+    <div style={{ borderTop:`1px solid ${C.border}`, marginTop:8, paddingTop:16 }}>
+      {/* Update banner */}
+      {hasUpdate && (
+        <div style={{ marginBottom:14, padding:'14px 16px', background:`${C.green}0d`, border:`1px solid ${C.green}44`, borderRadius:12 }}>
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:8 }}>
+            <div style={{ fontSize:'.78em', fontWeight:600, color:C.green }}>🚀 Nueva versión disponible: v{latest!.version}</div>
+            <a href={latest!.apkUrl} target="_blank" rel="noreferrer"
+              style={{ background:C.green, color:'#07070e', fontSize:'.7em', fontWeight:700, padding:'6px 14px', borderRadius:8, textDecoration:'none', fontFamily:"'Sora',sans-serif", flexShrink:0 }}>
+              ⬇ Descargar APK
+            </a>
+          </div>
+          <div style={{ display:'flex', flexDirection:'column', gap:3 }}>
+            {latest!.changelog.map((c, i) => (
+              <div key={i} style={{ fontSize:'.68em', color:C.muted, display:'flex', gap:6 }}>
+                <span style={{ color:C.green, flexShrink:0 }}>◆</span>{c}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Version info */}
+      <div style={{ textAlign:'center', padding:'4px 0 8px' }}>
+        <div style={{ fontSize:'.72em', fontWeight:600, color:C.gold, fontFamily:"'DM Mono',monospace", letterSpacing:'.5px' }}>
+          AURUM Nexus v{APP_VERSION}
+        </div>
+        <div style={{ fontSize:'.62em', color:C.faint, marginTop:3, fontFamily:"'DM Mono',monospace" }}>
+          build {APP_BUILD} · com.aurum.advisor
+        </div>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'center', gap:10, marginTop:8 }}>
+          {checked && !hasUpdate && (
+            <span style={{ fontSize:'.62em', color:C.green }}>✓ Tienes la última versión</span>
+          )}
+          <button onClick={check} disabled={checking}
+            style={{ background:'transparent', border:`1px solid ${C.border2}`, borderRadius:7, padding:'4px 12px', color:checking?C.faint:C.muted, cursor:'pointer', fontSize:'.62em', fontFamily:"'Sora',sans-serif", display:'flex', alignItems:'center', gap:5 }}>
+            {checking ? <><Spinner/>Comprobando…</> : '↻ Buscar actualización'}
+          </button>
+        </div>
+        {/* Link de descarga directa siempre disponible */}
+        {latest?.apkUrl && (
+          <div style={{ marginTop:10, fontSize:'.62em', color:C.faint }}>
+            <a href={latest.apkUrl} target="_blank" rel="noreferrer"
+              style={{ color:C.blue, textDecoration:'none' }}>
+              ⬇ Descarga directa APK (Drive)
+            </a>
+            <span style={{ margin:'0 6px', color:C.border2 }}>·</span>
+            <span style={{ color:C.faint }}>Powered by Claude Sonnet · GPT-4o · DeepSeek R1</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function SettingsTab({ profile, setProfile, userProfile, setUserProfile }:{
   profile: string;
   setProfile: (p:string)=>void;
@@ -1766,6 +2971,9 @@ function SettingsTab({ profile, setProfile, userProfile, setUserProfile }:{
         {/* Monitorización autónoma */}
         <AutonomousSection />
 
+        {/* Versión + OTA checker */}
+        <VersionCard />
+
       </div>
     </div>
   );
@@ -1779,11 +2987,11 @@ function BottomNav({ tab, setTab, alertCount, onAlertOpen }: {
   alertCount: number; onAlertOpen: ()=>void;
 }) {
   const BNAV = [
-    { id:'chat',      icon:'💬', label:'Chat'      },
-    { id:'portfolio', icon:'📊', label:'Cartera'   },
-    { id:'invest',    icon:'💰', label:'Invertir'  },
-    { id:'research',  icon:'🔬', label:'Research'  },
-    { id:'settings',  icon:'⚙️', label:'Ajustes'   },
+    { id:'chat',      icon:'💬', label:'Chat',     shortcut:'Ctrl+1' },
+    { id:'portfolio', icon:'📊', label:'Cartera',  shortcut:'Ctrl+2' },
+    { id:'invest',    icon:'💰', label:'Invertir', shortcut:'Ctrl+3' },
+    { id:'control',   icon:'🖥️', label:'Control',  shortcut:'Ctrl+4' },
+    { id:'settings',  icon:'⚙️', label:'Ajustes',  shortcut:'Ctrl+5' },
   ];
   return (
     <nav style={{
@@ -1797,6 +3005,7 @@ function BottomNav({ tab, setTab, alertCount, onAlertOpen }: {
       {BNAV.map(n => (
         <button key={n.id} className={`bnav-btn${tab===n.id?' active':''}`}
           onClick={() => setTab(n.id)}
+          title={n.shortcut}
           style={{
             flex:1, background:'transparent', border:'none', cursor:'pointer',
             display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center',
@@ -1846,6 +3055,17 @@ export default function App() {
   portfolioRef.current   = portfolio;
   profileRef.current     = profile;
   userProfileRef.current = userProfile;
+
+  // Atajos de teclado globales
+  useEffect(() => {
+    const TAB_KEYS: Record<string, string> = { '1':'chat', '2':'portfolio', '3':'invest', '4':'control', '5':'settings' };
+    const handler = (e: KeyboardEvent) => {
+      if (e.ctrlKey && TAB_KEYS[e.key]) { e.preventDefault(); setTab(TAB_KEYS[e.key]); }
+      if (e.key === 'Escape') setShowAlerts(false);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
 
   useEffect(() => {
     bootstrap();
@@ -1914,10 +3134,21 @@ export default function App() {
         <div style={{ display:'flex', alignItems:'center', gap:10 }}>
           <div style={{ width:32, height:32, borderRadius:9, background:`linear-gradient(135deg,${C.goldD},${C.goldL})`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:15, fontWeight:800, color:'#07070e', fontFamily:"'Cormorant Garamond',serif", boxShadow:`0 0 16px ${C.gold}40`, flexShrink:0 }}>A</div>
           <div>
-            <div style={{ fontSize:'.82em', fontWeight:600, color:C.text, lineHeight:1.2 }}>AURUM <span style={{ color:C.gold, fontFamily:"'Cormorant Garamond',serif", fontStyle:'italic', fontWeight:400 }}>Nexus</span></div>
+            <div style={{ fontSize:'.82em', fontWeight:600, color:C.text, lineHeight:1.2 }}>AURUM <span style={{ color:C.gold, fontFamily:"'Cormorant Garamond',serif", fontStyle:'italic', fontWeight:400 }}>Nexus</span> <span style={{ fontSize:'.65em', color:C.faint, fontFamily:"'DM Mono',monospace", fontWeight:400 }}>v{APP_VERSION}</span></div>
             <div style={{ fontSize:'.56em', color:C.faint, display:'flex', gap:5, alignItems:'center', marginTop:1 }}>
               {pf.emoji} <span style={{ color:pf.color }}>{pf.label}</span>
-              {portfolio.length>0 && <span style={{ color:C.muted }}>· {portfolio.reduce((a,p)=>a+p.shares*p.currentPrice,0).toLocaleString('es-ES',{maximumFractionDigits:0})}€</span>}
+              {portfolio.length>0 && (() => {
+                const val  = portfolio.reduce((a,p)=>a+p.shares*p.currentPrice,0);
+                const cost = portfolio.reduce((a,p)=>a+p.shares*p.avgPrice,0);
+                const pnlP = cost ? (val-cost)/cost*100 : 0;
+                return (
+                  <>
+                    <span style={{ color:C.muted }}>·</span>
+                    <span style={{ color:C.text, fontFamily:"'DM Mono',monospace" }}>{val.toLocaleString('es-ES',{maximumFractionDigits:0})}€</span>
+                    {cost > 0 && <span style={{ color:pnlP>=0?C.green:C.red, fontWeight:600 }}>{pnlP>=0?'▲':'▼'}{Math.abs(pnlP).toFixed(1)}%</span>}
+                  </>
+                );
+              })()}
             </div>
           </div>
         </div>
@@ -1931,12 +3162,16 @@ export default function App() {
         </div>
       </header>
 
+      {/* Market Ticker — índices en vivo (visible si hay Cloudflare Worker) */}
+      <MarketTicker />
+
       {/* Contenido */}
       <div style={{ flex:1, overflow:'hidden', position:'relative', paddingBottom:'calc(58px + env(safe-area-inset-bottom, 0px))' }}>
         {tab==='chat'      && <ChatTab profile={profile} portfolio={portfolio} userProfile={userProfile} />}
         {tab==='portfolio' && <PortfolioTab portfolio={portfolio} setPortfolio={setPortfolio} />}
-        {tab==='invest'    && <InvestTab profile={profile} portfolio={portfolio} setPortfolio={setPortfolio} userProfile={userProfile} />}
+        {tab==='invest'    && <InvestTab profile={profile} portfolio={portfolio} setPortfolio={setPortfolio} userProfile={userProfile} onNavigate={setTab} />}
         {tab==='research'  && <ResearchTab />}
+        {tab==='control'   && <ControlTab />}
         {tab==='simulator' && <SimulatorTab />}
         {tab==='settings'  && <SettingsTab profile={profile} setProfile={handleSetProfile} userProfile={userProfile} setUserProfile={setUserProfile} />}
       </div>

@@ -1,0 +1,13 @@
+{
+  "version": "1.2.0",
+  "build": "2026.06.24",
+  "apkUrl": "https://drive.google.com/uc?export=download&id=1YUTLqUwlOiOkvWI8Uf4yfcWgL20IleEZ",
+  "changelog": [
+    "Watchlist de tickers en tiempo real",
+    "Notificaciones nativas de alertas de precio",
+    "Exportar cartera a CSV",
+    "Atajos de teclado (Ctrl+1-5)",
+    "Prefill automático desde RebalanceCard",
+    "Market ticker en vivo (IBEX35, S&P500, Bitcoin...)"
+  ]
+}

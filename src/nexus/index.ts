@@ -49,6 +49,10 @@ export type { Decision, DecisionType, AutonomousTrade, AutoInvestConfig, ActionL
 export { loadLessons, buildLessonsBlock, runLearningCycle, clearLessons } from './selflearn';
 export type { Lesson } from './selflearn';
 
+// Intérprete de comandos + control de PC/navegador
+export { detectActionIntent, executeCommand, commandResultToMessage, runBrowserTask, runLocalAgentTask, sendAgentCommand, getAgentStatus } from './commands';
+export type { CommandIntent, CommandResult, ComputerTaskResult } from './commands';
+
 // ── Singleton memory state ──────────────────────────────────────────────────
 let _memory: UserMemory = { facts: [], interactions: 0, lastUpdated: 0 };
 let _loaded = false;
@@ -145,11 +149,42 @@ export async function nexusMarketBriefing(): Promise<string> {
 }
 
 // ── Portfolio price refresh ─────────────────────────────────────────────────
+// Prioridad: 1) Backend /prices (Yahoo Finance, 0 tokens)  2) IA como fallback
+
+async function _getBackendCfg(): Promise<{ url: string; apiKey: string } | null> {
+  try {
+    const v = localStorage.getItem('aurum-backend-config');
+    if (!v) return null;
+    const cfg = JSON.parse(v);
+    return cfg?.url && cfg?.apiKey ? cfg : null;
+  } catch { return null; }
+}
+
 export async function nexusPrices(tickers: string[]): Promise<{ ticker: string; price: number }[]> {
-  const key    = `prices:${tickers.sort().join(',')}`;
+  if (!tickers.length) return [];
+  const key    = `prices:${[...tickers].sort().join(',')}`;
   const cached = cacheGet(key);
   if (cached) { try { return JSON.parse(cached); } catch {} }
 
+  // Intento 1: backend /prices con Yahoo Finance (gratis, rápido, 0 tokens)
+  try {
+    const cfg = await _getBackendCfg();
+    if (cfg) {
+      const res = await fetch(
+        `${cfg.url.replace(/\/$/, '')}/prices?tickers=${tickers.join(',')}`,
+        { headers: { 'X-AURUM-KEY': cfg.apiKey }, signal: AbortSignal.timeout(6000) },
+      );
+      if (res.ok) {
+        const data = await res.json() as { prices: { ticker: string; price: number }[] };
+        if (data.prices?.length) {
+          cacheSet(key, JSON.stringify(data.prices));
+          return data.prices;
+        }
+      }
+    }
+  } catch { /* continúa con fallback */ }
+
+  // Intento 2: IA (último recurso, consume tokens)
   const route = routeTask('prices');
   const reply = await callProvider(
     route,

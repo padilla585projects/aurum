@@ -10,8 +10,10 @@ Novedades v2:
 """
 
 import asyncio
+import json
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Optional
@@ -35,6 +37,50 @@ TR_PIN           = os.getenv("TR_PIN", "")
 TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 ANTHROPIC_KEY    = os.getenv("ANTHROPIC_API_KEY", "")
+
+# ── Claude helper ────────────────────────────────────────────────────────────
+
+async def _call_claude(system: str, user: str, max_tokens: int = 1024, web_search: bool = True) -> str:
+    """Llama a Claude claude-sonnet-4-6 con búsqueda web opcional."""
+    if not ANTHROPIC_KEY:
+        raise ValueError("ANTHROPIC_API_KEY no configurada")
+    body: dict = {
+        "model":      "claude-sonnet-4-6",
+        "max_tokens": max_tokens,
+        "system":     system,
+        "messages":   [{"role": "user", "content": user}],
+    }
+    if web_search:
+        body["tools"] = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}]
+
+    headers = {
+        "x-api-key":         ANTHROPIC_KEY,
+        "anthropic-version": "2023-06-01",
+        "anthropic-beta":    "interleaved-thinking-2025-05-14",
+        "Content-Type":      "application/json",
+    }
+    async with httpx.AsyncClient(timeout=60) as client:
+        for _ in range(8):
+            r = await client.post("https://api.anthropic.com/v1/messages", headers=headers, json=body)
+            r.raise_for_status()
+            data = r.json()
+            stop = data.get("stop_reason")
+            if stop == "end_turn":
+                return " ".join(
+                    b["text"] for b in data.get("content", []) if b.get("type") == "text"
+                ).strip()
+            if stop == "tool_use" and web_search:
+                body["messages"].append({"role": "assistant", "content": data["content"]})
+                body["messages"].append({
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": b["id"], "content": "Executed"}
+                        for b in data["content"] if b.get("type") == "tool_use"
+                    ],
+                })
+            else:
+                break
+    return "Sin respuesta."
 
 tr = TRClient()
 
@@ -76,12 +122,41 @@ _auto_cfg: dict = {
     "last_run":        None,
 }
 
+_AUTO_INVEST_SYSTEM = """\
+Eres AURUM, gestor de inversiones autónomo. El servidor te ha activado para ejecutar el ciclo de inversión periódico.
+Usa búsqueda web para obtener el estado actual del mercado (índices, tipos de interés, sentimiento).
+
+Analiza la cartera actual y decide cómo invertir el presupuesto disponible.
+Responde SOLO con JSON válido (sin texto adicional, sin backticks):
+{
+  "action": "invest",
+  "trades": [
+    {"ticker": "VWCE", "isin": "IE00B3RBWM25", "name": "Vanguard FTSE All-World", "amount": 80}
+  ],
+  "reasoning": "Razonamiento breve (1-2 frases) explicando la decisión basada en el mercado actual.",
+  "marketBrief": "Una frase sobre el estado del mercado hoy."
+}
+
+Si no es buen momento para invertir (alta incertidumbre, evento inminente), devuelve:
+{"action": "hold", "reasoning": "motivo claro", "marketBrief": "contexto"}
+
+Reglas:
+- Los importes en trades deben sumar exactamente el presupuesto indicado.
+- Máximo 4 instrumentos si presupuesto < 500€, hasta 6 si ≥ 500€.
+- Solo ETFs disponibles en Trade Republic España.
+- ETFs preferidos: VWCE, XEON, SPPW, SGLN, EUNL, VUSA, IEMA, ZPRV.
+- No duplicar posiciones existentes salvo que rebalanceo lo justifique.
+- Mínimo 10€ por instrumento.
+"""
+
 async def _run_auto_cycle():
     """
-    Ciclo autónomo del servidor:
-      1. Comprueba que TR esté autenticado
-      2. Obtiene cartera actual
-      3. Llama al endpoint /auto-run internamente
+    Ciclo autónomo completo del servidor:
+      1. Comprueba autenticación y timing
+      2. Obtiene cartera y saldo de TR
+      3. Llama a Claude con web search para decidir inversión
+      4. Ejecuta las órdenes directamente en TR
+      5. Notifica via Telegram con resultado
     """
     while True:
         await asyncio.sleep(3600)  # revisar cada hora
@@ -106,22 +181,86 @@ async def _run_auto_cycle():
             budget    = min(_auto_cfg["max_amount"], cash)
 
             if budget < 10:
-                logger.info(f"[Auto] Saldo insuficiente ({cash:.2f}€) — no hay nada que invertir")
-                await telegram_notify(f"⚠️ AURUM Auto: saldo insuficiente ({cash:.2f}€). Recarga tu cuenta de TR.")
+                logger.info(f"[Auto] Saldo insuficiente ({cash:.2f}€)")
+                await telegram_notify(f"⚠️ AURUM Auto: saldo insuficiente (*{cash:.2f}€*). Recarga tu cuenta de TR.")
+                _auto_cfg["last_run"] = datetime.now()
                 continue
 
-            # La decisión de inversión la toma el frontend via /auto-run
-            # El backend solo notifica que hay saldo disponible
-            _auto_cfg["last_run"] = datetime.now()
-            logger.info(f"[Auto] Saldo disponible: {cash:.2f}€. Listo para auto-inversión.")
-            await telegram_notify(
-                f"🤖 *AURUM Auto-monitor*\nSaldo disponible: *{cash:.2f}€*\n"
-                f"Posiciones activas: {len(positions)}\n"
-                f"Próximo ciclo en {interval_h}h"
+            # Construir contexto de cartera para Claude
+            portfolio_str = ", ".join(
+                f"{p.get('name','?')}({p.get('value',0):.0f}€, {p.get('pnl_pct',0):+.1f}%)"
+                for p in positions
+            ) or "cartera vacía"
+            total_val = sum(p.get("value", 0) for p in positions)
+
+            user_msg = (
+                f"Ciclo autónomo — {datetime.now().strftime('%d/%m/%Y %H:%M')}\n"
+                f"Presupuesto disponible: {budget:.2f}€\n"
+                f"Cartera actual: {portfolio_str}\n"
+                f"Valor total cartera: {total_val:.0f}€\n\n"
+                f"Analiza el mercado actual con búsqueda web y decide la mejor inversión para este presupuesto."
             )
+
+            logger.info(f"[Auto] Llamando a Claude para decidir inversión de {budget:.2f}€…")
+            raw = await _call_claude(_AUTO_INVEST_SYSTEM, user_msg, max_tokens=1024, web_search=True)
+
+            match = re.search(r"\{[\s\S]*\}", raw)
+            if not match:
+                raise ValueError(f"Claude no devolvió JSON válido: {raw[:200]}")
+            plan = json.loads(match.group())
+
+            action = plan.get("action", "hold")
+            reasoning  = plan.get("reasoning", "")
+            market_brief = plan.get("marketBrief", "")
+
+            _auto_cfg["last_run"] = datetime.now()
+
+            if action == "hold":
+                logger.info(f"[Auto] Decisión: HOLD — {reasoning}")
+                await telegram_notify(
+                    f"⏸️ *AURUM Auto: mantener posiciones*\n\n"
+                    f"💬 _{reasoning}_\n"
+                    f"📊 {market_brief}"
+                )
+                continue
+
+            trades = plan.get("trades", [])
+            if not trades:
+                logger.info("[Auto] No hay trades en la decisión")
+                continue
+
+            # Ejecutar órdenes en TR
+            results = []
+            for t in trades:
+                try:
+                    logger.info(f"[Auto] Ejecutando {t['amount']:.0f}€ de {t['ticker']}…")
+                    order = await tr.buy_cash_amount(t["isin"], t["amount"])
+                    results.append({"ticker": t["ticker"], "amount": t["amount"], "status": "ok", "id": order.get("id","")})
+                except Exception as e:
+                    logger.error(f"[Auto] Error orden {t['ticker']}: {e}")
+                    results.append({"ticker": t["ticker"], "amount": t["amount"], "status": "error", "error": str(e)})
+
+            executed   = [r for r in results if r["status"] == "ok"]
+            failed     = [r for r in results if r["status"] == "error"]
+            total_exec = sum(r["amount"] for r in executed)
+
+            trades_txt = "\n".join(f"  ✅ *{r['ticker']}*: {r['amount']:.0f}€" for r in executed)
+            if failed:
+                trades_txt += "\n" + "\n".join(f"  ❌ {r['ticker']}: {r.get('error','?')[:40]}" for r in failed)
+
+            logger.info(f"[Auto] Ciclo completado: {len(executed)}/{len(results)} órdenes ejecutadas, {total_exec:.0f}€")
+            await telegram_notify(
+                f"🤖 *AURUM ejecutó ciclo autónomo*\n\n"
+                f"{trades_txt}\n\n"
+                f"💰 Total invertido: *{total_exec:.0f}€*\n"
+                f"💬 _{reasoning}_\n"
+                f"📊 {market_brief}\n\n"
+                f"_Próximo ciclo en {interval_h}h_"
+            )
+
         except Exception as e:
             logger.error(f"[Auto] Error en ciclo: {e}")
-            await telegram_notify(f"❌ AURUM Auto error: {e}")
+            await telegram_notify(f"❌ *AURUM Auto error*: {str(e)[:200]}")
 
 
 # ── App lifecycle ────────────────────────────────────────────────────────────
@@ -140,11 +279,30 @@ async def lifespan(app: FastAPI):
 
     _schedule_task = asyncio.create_task(_run_auto_cycle())
     logger.info("Scheduler autónomo iniciado.")
+
+    # Telegram bot
+    _tg_bot = None
+    if TELEGRAM_TOKEN:
+        try:
+            from telegram_bot import start_bot
+            _tg_bot = await start_bot(TELEGRAM_TOKEN, tr, _auto_cfg)
+            logger.info("Telegram bot arrancado.")
+        except Exception as e:
+            logger.warning(f"Telegram bot no pudo arrancar: {e}")
+
     await telegram_notify("✅ *AURUM Backend* arrancado y listo.")
 
     yield
 
     _schedule_task.cancel()
+    if _tg_bot:
+        try:
+            from telegram_bot import stop_bot
+            await stop_bot()
+        except Exception:
+            pass
+    from computer_agent import close_agent
+    await close_agent()
     await tr.disconnect()
     logger.info("AURUM Backend apagado.")
     await telegram_notify("🔴 *AURUM Backend* apagado.")
@@ -187,6 +345,17 @@ class ScheduleConfig(BaseModel):
     enabled:        bool
     interval_hours: int   = 168
     max_amount:     float = 100.0
+
+class SellItem(BaseModel):
+    ticker: str
+    isin:   str
+    shares: float = 0.0     # si se especifica, vende esas acciones exactas
+    amount: float = 0.0     # si se especifica, vende ese importe en €
+    name:   str   = ""
+
+class SellRequest(BaseModel):
+    trades: list[SellItem]
+    notify: bool = True
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
@@ -319,6 +488,49 @@ async def auto_run(body: AutoRunRequest, x_aurum_key: str = Header(default="")):
     return {"results": results, "total_executed": executed, "total_trades": len(results), "autonomous": True}
 
 
+@app.post("/sell")
+async def sell(body: SellRequest, x_aurum_key: str = Header(default="")):
+    """
+    Vende posiciones en Trade Republic.
+    Especifica shares (unidades) o amount (€). Si ambos, se usa shares.
+    """
+    require_key(x_aurum_key)
+    if not tr.authenticated:
+        raise HTTPException(401, "No autenticado en Trade Republic")
+    if not body.trades:
+        raise HTTPException(400, "Lista de trades vacía")
+
+    await tr.ensure_connected()
+    results = []
+    for trade in body.trades:
+        try:
+            if trade.shares > 0:
+                order_data = await tr.sell_shares(trade.isin, trade.shares)
+                desc = f"{trade.shares} acciones"
+            elif trade.amount > 0:
+                order_data = await tr.sell_cash_amount(trade.isin, trade.amount)
+                desc = f"{trade.amount:.0f}€"
+            else:
+                raise ValueError("Especifica 'shares' o 'amount'")
+
+            logger.info(f"Venta {trade.ticker} ({desc}): {order_data}")
+            results.append({
+                "ticker":  trade.ticker, "isin": trade.isin,
+                "status":  "executed",   "orderId": order_data.get("id", ""),
+                "desc":    desc,
+            })
+        except Exception as e:
+            logger.error(f"Error venta {trade.ticker}: {e}")
+            results.append({"ticker": trade.ticker, "isin": trade.isin, "status": "error", "error": str(e)})
+
+    executed = sum(1 for r in results if r["status"] == "executed")
+    if executed and body.notify:
+        lines = "\n".join(f"  • {r['ticker']}: {r.get('desc','?')}" for r in results if r["status"] == "executed")
+        await telegram_notify(f"📤 *AURUM vendió {executed} posición(es)*\n{lines}")
+
+    return {"results": results, "total_executed": executed}
+
+
 @app.post("/schedule")
 async def configure_schedule(body: ScheduleConfig, x_aurum_key: str = Header(default="")):
     """Configura el modo autónomo del backend (desde el frontend)."""
@@ -347,6 +559,527 @@ async def manual_notify(body: dict, x_aurum_key: str = Header(default="")):
     if msg:
         await telegram_notify(msg)
     return {"status": "sent"}
+
+
+# ── /prices — precios en tiempo real via Yahoo Finance (sin tokens) ──────────
+
+# Mapa de tickers AURUM → Yahoo Finance (Xetra .DE o London .L)
+_YAHOO_MAP: dict[str, str] = {
+    # ETFs (Xetra .DE / London .L)
+    "VWCE":  "VWCE.DE",  "XEON":  "XEON.DE",  "SPPW":  "SPPW.DE",
+    "SGLN":  "SGLN.DE",  "EUNL":  "EUNL.DE",  "VUSA":  "VUSA.L",
+    "IEMA":  "IEMA.DE",  "ZPRV":  "ZPRV.DE",  "IUSE":  "IUSE.DE",
+    "VHYL":  "VHYL.L",   "AGGU":  "AGGU.L",   "IS3N":  "IS3N.DE",
+    "QDVE":  "QDVE.DE",  "XDWD":  "XDWD.DE",  "EXXT":  "EXXT.DE",
+    "BTCE":  "BTCE.DE",  "WGLD":  "WGLD.DE",  "IWDA":  "IWDA.AS",
+    # Índices y mercado (pass-through — Yahoo los acepta tal cual)
+    "IBEX35":  "^IBEX",    "SP500":   "^GSPC",
+    "NASDAQ":  "^IXIC",    "DAX":     "^GDAXI",
+    "EURUSD":  "EURUSD=X", "EURUSD=X": "EURUSD=X",
+    "BTCEUR":  "BTC-EUR",  "BTC-EUR": "BTC-EUR",
+    "GOLD":    "GC=F",     "GC=F":    "GC=F",
+    "^IBEX":   "^IBEX",    "^GSPC":   "^GSPC",
+    "^IXIC":   "^IXIC",    "^GDAXI":  "^GDAXI",
+}
+
+async def _yahoo_prices(tickers: list[str]) -> dict[str, float]:
+    """Obtiene precios de Yahoo Finance. Devuelve {ticker: price}."""
+    yahoo_syms = [_YAHOO_MAP.get(t, t) for t in tickers]
+    sym_str    = ",".join(yahoo_syms)
+    url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={sym_str}&fields=regularMarketPrice"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+    }
+    result = {}
+    async with httpx.AsyncClient(timeout=8, headers=headers) as client:
+        r = await client.get(url)
+        r.raise_for_status()
+        data = r.json()
+    quotes = data.get("quoteResponse", {}).get("result", [])
+    for q in quotes:
+        sym   = q.get("symbol", "")
+        price = q.get("regularMarketPrice") or q.get("ask") or 0.0
+        # Revertir el mapeo para devolver el ticker AURUM original
+        orig = next((k for k, v in _YAHOO_MAP.items() if v == sym), sym)
+        if price:
+            result[orig] = round(price, 4)
+    return result
+
+
+@app.get("/prices")
+async def get_prices_endpoint(tickers: str, x_aurum_key: str = Header(default="")):
+    """
+    Precios en tiempo real para los tickers indicados.
+    Usa Yahoo Finance (gratis, sin tokens de IA).
+    ?tickers=VWCE,XEON,SPPW
+    """
+    require_key(x_aurum_key)
+    ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
+    if not ticker_list:
+        raise HTTPException(400, "Parámetro 'tickers' vacío")
+
+    try:
+        prices = await _yahoo_prices(ticker_list)
+        return {
+            "prices": [{"ticker": t, "price": prices.get(t, 0)} for t in ticker_list],
+            "source": "yahoo_finance",
+            "ts":     datetime.now().isoformat(),
+        }
+    except Exception as e:
+        logger.warning(f"[Prices] Yahoo Finance error: {e} — usando Claude fallback")
+        # Fallback a Claude si Yahoo falla
+        try:
+            raw = await _call_claude(
+                "Eres un asistente financiero. Devuelve SOLO JSON: [{\"ticker\":\"X\",\"price\":0.0}]",
+                f"Precios actuales de: {', '.join(ticker_list)}. SOLO JSON válido.",
+                max_tokens=400, web_search=True,
+            )
+            m = re.search(r"\[[\s\S]*\]", raw)
+            if m:
+                return {"prices": json.loads(m.group()), "source": "claude_fallback", "ts": datetime.now().isoformat()}
+        except Exception as e2:
+            logger.error(f"[Prices] Claude fallback error: {e2}")
+        raise HTTPException(503, f"No se pudieron obtener precios: {e}")
+
+
+# ── /market — índices de mercado en tiempo real (sin auth) ──────────────────
+
+_MARKET_SYMBOLS = [
+    {"key": "IBEX35",  "symbol": "^IBEX",    "name": "IBEX 35",  "currency": "EUR"},
+    {"key": "SP500",   "symbol": "^GSPC",    "name": "S&P 500",  "currency": "USD"},
+    {"key": "NASDAQ",  "symbol": "^IXIC",    "name": "Nasdaq",   "currency": "USD"},
+    {"key": "EURUSD",  "symbol": "EURUSD=X", "name": "EUR/USD",  "currency": "FX" },
+    {"key": "BTCEUR",  "symbol": "BTC-EUR",  "name": "Bitcoin",  "currency": "EUR"},
+    {"key": "GOLD",    "symbol": "GC=F",     "name": "Oro",      "currency": "USD"},
+]
+
+@app.get("/market")
+async def get_market():
+    """
+    Snapshot de índices en tiempo real (sin autenticación).
+    Usado por el frontend y el Telegram bot.
+    """
+    symbols_str = ",".join(s["symbol"] for s in _MARKET_SYMBOLS)
+    url = (
+        f"https://query1.finance.yahoo.com/v7/finance/quote"
+        f"?symbols={symbols_str}"
+        f"&fields=regularMarketPrice,regularMarketChangePercent"
+    )
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    try:
+        async with httpx.AsyncClient(timeout=8, headers=headers) as c:
+            r = await c.get(url)
+            r.raise_for_status()
+            quotes = r.json().get("quoteResponse", {}).get("result", [])
+
+        result = []
+        for m in _MARKET_SYMBOLS:
+            q = next((x for x in quotes if x.get("symbol") == m["symbol"]), None)
+            result.append({
+                "key":       m["key"],
+                "name":      m["name"],
+                "currency":  m["currency"],
+                "price":     q.get("regularMarketPrice") if q else None,
+                "changePct": q.get("regularMarketChangePercent") if q else None,
+            })
+
+        return {"data": result, "ts": int(datetime.now().timestamp() * 1000)}
+
+    except Exception as e:
+        logger.warning(f"[Market] Yahoo error: {e}")
+        raise HTTPException(502, f"No se pudieron obtener datos de mercado: {e}")
+
+
+# ── /do — intérprete de órdenes en lenguaje natural ─────────────────────────
+
+class DoRequest(BaseModel):
+    command: str           # orden en lenguaje natural
+    capital: float = 0.0   # opcional: presupuesto si el usuario lo especifica
+    context: dict  = {}    # contexto adicional (portfolio, profile, etc.)
+
+_DO_SYSTEM = """\
+Eres AURUM, gestor financiero autónomo. El usuario te da una orden en lenguaje natural.
+Usa búsqueda web si necesitas datos actuales del mercado.
+
+Interpreta la orden y devuelve SOLO JSON:
+{
+  "action": "invest|portfolio|auto_on|auto_off|status|advise|notify",
+  "amount": 0,
+  "message": "respuesta al usuario en español",
+  "trades": [{"ticker":"VWCE","isin":"IE00B3RBWM25","name":"Vanguard FTSE All-World","amount":300}]
+}
+
+Reglas:
+- "invest": genera trades para invertir amount€. trades[] con suma = amount.
+- "portfolio": devuelve solo action + message.
+- "auto_on"/"auto_off": toggle del modo autónomo.
+- "status": información del sistema.
+- "advise": responde como asesor (message contiene la respuesta completa).
+- "notify": message contiene el texto a enviar por Telegram.
+- Solo instrumentos disponibles en Trade Republic España.
+- ETFs preferidos: VWCE, XEON, SPPW, SGLN, EUNL, VUSA, IEMA.
+"""
+
+
+@app.post("/do")
+async def do_command(body: DoRequest, x_aurum_key: str = Header(default="")):
+    """
+    Ejecuta cualquier orden en lenguaje natural.
+    AURUM interpreta, decide y actúa.
+    """
+    require_key(x_aurum_key)
+
+    context_str = ""
+    if body.context:
+        context_str = f"\nContexto adicional: {json.dumps(body.context, ensure_ascii=False)}"
+
+    user_msg = f"Orden: {body.command}{context_str}"
+    if body.capital > 0:
+        user_msg += f"\nPresupuesto disponible: {body.capital:.2f}€"
+
+    try:
+        raw = await _call_claude(_DO_SYSTEM, user_msg, max_tokens=1024, web_search=True)
+    except Exception as e:
+        raise HTTPException(500, f"Claude error: {e}")
+
+    match = re.search(r"\{[\s\S]*\}", raw)
+    if not match:
+        return {"action": "advise", "message": raw, "executed": False}
+
+    try:
+        plan = json.loads(match.group())
+    except json.JSONDecodeError:
+        return {"action": "advise", "message": raw, "executed": False}
+
+    action  = plan.get("action", "advise")
+    message = plan.get("message", "")
+    trades  = plan.get("trades", [])
+    result  = {"action": action, "message": message, "executed": False}
+
+    # Ejecutar la acción detectada
+    if action == "invest" and trades:
+        if not tr.authenticated:
+            result["message"] = "⚠️ No autenticado en Trade Republic."
+        else:
+            await tr.ensure_connected()
+            exec_results = []
+            for t in trades:
+                try:
+                    order = await tr.buy_cash_amount(t["isin"], t["amount"])
+                    exec_results.append({"ticker": t["ticker"], "amount": t["amount"], "status": "executed", "orderId": order.get("id","")})
+                except Exception as e:
+                    exec_results.append({"ticker": t["ticker"], "amount": t["amount"], "status": "error", "error": str(e)})
+            executed = sum(1 for r in exec_results if r["status"] == "executed")
+            total    = sum(r["amount"] for r in exec_results if r["status"] == "executed")
+            result["executed"]     = executed > 0
+            result["trades"]       = exec_results
+            result["total_executed"] = total
+            if executed:
+                trades_txt = "\n".join(f"  • {r['ticker']}: {r['amount']:.0f}€" for r in exec_results if r["status"] == "executed")
+                await telegram_notify(f"🤖 *AURUM /do ejecutó {executed} orden(es)*\n{trades_txt}\nTotal: *{total:.0f}€*\n\n_{message}_")
+
+    elif action == "portfolio":
+        if tr.authenticated:
+            try:
+                await tr.ensure_connected()
+                positions = await tr.get_portfolio()
+                cash      = await tr.get_cash()
+                result["portfolio"] = positions
+                result["cash"]      = cash
+                result["executed"]  = True
+            except Exception as e:
+                result["message"] = f"Error obteniendo cartera: {e}"
+
+    elif action == "auto_on":
+        _auto_cfg["enabled"] = True
+        amount = float(plan.get("amount", 0))
+        if amount > 0:
+            _auto_cfg["max_amount"] = amount
+        result["executed"] = True
+        await telegram_notify(f"🟢 *AURUM auto activado* vía /do — máx {_auto_cfg['max_amount']:.0f}€/ciclo")
+
+    elif action == "auto_off":
+        _auto_cfg["enabled"] = False
+        result["executed"] = True
+        await telegram_notify("🔴 *AURUM auto desactivado* vía /do")
+
+    elif action == "notify":
+        await telegram_notify(message)
+        result["executed"] = True
+
+    elif action == "status":
+        result["status"] = {
+            "tr_authenticated": tr.authenticated,
+            "auto_enabled":     _auto_cfg.get("enabled", False),
+            "max_amount":       _auto_cfg.get("max_amount", 100),
+            "interval_hours":   _auto_cfg.get("interval_hours", 168),
+            "last_run":         _auto_cfg["last_run"].isoformat() if _auto_cfg.get("last_run") else None,
+        }
+        result["executed"] = True
+
+    return result
+
+
+# ── /computer — control autónomo de navegador vía Playwright + Claude vision ─
+
+class ComputerRequest(BaseModel):
+    task:        str
+    url:         str   = ""
+    credentials: dict  = {}   # {"username":"...","password":"..."} — opcional
+    headless:    bool  = True
+    max_steps:   int   = 25
+
+@app.post("/computer")
+async def computer_task(body: ComputerRequest, x_aurum_key: str = Header(default="")):
+    """
+    Ejecuta una tarea en un navegador controlado por AURUM + Claude Vision.
+    No necesita intervención del usuario.
+    Ejemplos: "extrae mi saldo de Revolut", "compra VWCE en Degiro", etc.
+    """
+    require_key(x_aurum_key)
+    from computer_agent import get_agent
+    agent = get_agent(headless=body.headless)
+    try:
+        result = await agent.run_task(
+            task=body.task,
+            start_url=body.url or None,
+            max_steps=body.max_steps,
+            credentials=body.credentials or None,
+        )
+        if result["success"]:
+            await telegram_notify(f"🖥️ *AURUM Computer*: tarea completada\n_{body.task}_\n\nResultado: {result['result'][:500]}")
+        return result
+    except Exception as e:
+        logger.error(f"[Computer] Error: {e}")
+        raise HTTPException(500, str(e))
+
+
+# ── Local agent command queue ────────────────────────────────────────────────
+# El agente local (local_agent.py corriendo en el PC del usuario) hace polling
+# de comandos pendientes y reporta resultados.
+
+import uuid as _uuid
+
+_agent_queue:   list[dict] = []   # comandos pendientes para el agente local
+_agent_results: dict       = {}   # resultados por id
+_agent_info:    dict       = {}   # info del agente registrado
+
+
+class AgentCommandRequest(BaseModel):
+    command: dict          # {type: "screenshot"|"click"|"type"|..., ...}
+    wait_result: bool = True
+    timeout_sec: int  = 30
+
+class AgentResultRequest(BaseModel):
+    id:     str
+    result: dict
+
+
+@app.post("/agent/register")
+async def agent_register(body: dict, x_aurum_key: str = Header(default="")):
+    """El agente local se registra con sus capacidades."""
+    require_key(x_aurum_key)
+    global _agent_info
+    _agent_info = {**body, "registered_at": datetime.now().isoformat(), "online": True}
+    logger.info(f"[Agent] Local agent registrado: {body}")
+    await telegram_notify(f"🖥️ *AURUM Local Agent conectado*\nOS: {body.get('os','?')} | pyautogui: {body.get('pyautogui','?')}")
+    return {"status": "registered"}
+
+
+@app.get("/agent/status")
+async def agent_status(x_aurum_key: str = Header(default="")):
+    """Estado del agente local."""
+    require_key(x_aurum_key)
+    return {
+        "connected": bool(_agent_info),
+        "info":      _agent_info,
+        "pending":   len(_agent_queue),
+    }
+
+
+@app.get("/agent/poll")
+async def agent_poll(x_aurum_key: str = Header(default="")):
+    """El agente local llama a este endpoint para recibir comandos pendientes."""
+    require_key(x_aurum_key)
+    if not _agent_queue:
+        return {"pending": False}
+    cmd = _agent_queue.pop(0)
+    return {"pending": True, "id": cmd["id"], "command": cmd["command"]}
+
+
+@app.post("/agent/result")
+async def agent_result(body: AgentResultRequest, x_aurum_key: str = Header(default="")):
+    """El agente local reporta el resultado de un comando ejecutado."""
+    require_key(x_aurum_key)
+    _agent_results[body.id] = body.result
+    logger.info(f"[Agent] Resultado #{body.id}: {str(body.result)[:150]}")
+    return {"status": "ok"}
+
+
+@app.post("/agent/command")
+async def agent_command(body: AgentCommandRequest, x_aurum_key: str = Header(default="")):
+    """
+    Envía un comando al agente local para ejecutar en el PC/móvil del usuario.
+    Si wait_result=True, espera hasta timeout_sec segundos por el resultado.
+    """
+    require_key(x_aurum_key)
+    if not _agent_info:
+        raise HTTPException(503, "Agente local no conectado. Ejecuta local_agent.py en tu PC.")
+
+    cmd_id = str(_uuid.uuid4())[:8]
+    _agent_queue.append({"id": cmd_id, "command": body.command})
+
+    if not body.wait_result:
+        return {"id": cmd_id, "queued": True}
+
+    # Espera el resultado polling
+    deadline = asyncio.get_event_loop().time() + body.timeout_sec
+    while asyncio.get_event_loop().time() < deadline:
+        if cmd_id in _agent_results:
+            result = _agent_results.pop(cmd_id)
+            return {"id": cmd_id, "result": result}
+        await asyncio.sleep(0.5)
+
+    # Timeout — devuelve pending
+    return {"id": cmd_id, "result": None, "timeout": True}
+
+
+@app.post("/agent/do")
+async def agent_do_nl(body: dict, x_aurum_key: str = Header(default="")):
+    """
+    Ejecuta una orden en lenguaje natural en el PC del usuario
+    usando un loop Claude-visión con el agente local.
+    Claude ve screenshots y decide qué comandos enviar al agente.
+    """
+    require_key(x_aurum_key)
+    if not _agent_info:
+        raise HTTPException(503, "Agente local no conectado. Ejecuta local_agent.py en tu PC.")
+
+    task = body.get("task", "")
+    if not task:
+        raise HTTPException(400, "Campo 'task' requerido")
+
+    if not ANTHROPIC_KEY:
+        raise HTTPException(503, "ANTHROPIC_API_KEY no configurada")
+
+    _AGENT_VISION_SYSTEM = """\
+Eres AURUM, agente autónomo que controla el PC del usuario.
+Tienes una screenshot del escritorio. Debes completar la tarea indicada.
+Responde SOLO con JSON indicando la próxima acción:
+
+{"action":"screenshot","reason":"necesito ver el estado actual"}
+{"action":"open_url","url":"https://...","reason":"..."}
+{"action":"open_app","app":"chrome","reason":"..."}
+{"action":"click","x":100,"y":200,"reason":"..."}
+{"action":"type","text":"texto a escribir","reason":"..."}
+{"action":"hotkey","keys":["ctrl","c"],"reason":"..."}
+{"action":"shell","command":"tasklist","reason":"..."}
+{"action":"done","result":"resultado extraído","success":true}
+"""
+
+    history: list = []
+    last_result: dict = {}
+
+    # Primera screenshot
+    ss_cmd_id = str(_uuid.uuid4())[:8]
+    _agent_queue.append({"id": ss_cmd_id, "command": {"type": "screenshot"}})
+    screenshot_b64 = ""
+
+    for step in range(20):
+        # Espera screenshot o usamos la última disponible
+        if not screenshot_b64:
+            deadline = asyncio.get_event_loop().time() + 8
+            while asyncio.get_event_loop().time() < deadline:
+                if ss_cmd_id in _agent_results:
+                    screenshot_b64 = _agent_results.pop(ss_cmd_id).get("screenshot_b64", "")
+                    break
+                await asyncio.sleep(0.4)
+
+        if not screenshot_b64:
+            last_result = {"success": False, "result": "No se recibió screenshot del agente local"}
+            break
+
+        # Claude decide acción
+        messages = list(history) + [{
+            "role": "user",
+            "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": screenshot_b64}},
+                {"type": "text", "text": f"Tarea: {task}\nPaso {step+1}. ¿Siguiente acción?"},
+            ],
+        }]
+
+        try:
+            async with httpx.AsyncClient(timeout=30) as hc:
+                r = await hc.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "Content-Type": "application/json"},
+                    json={"model": "claude-sonnet-4-6", "max_tokens": 256, "system": _AGENT_VISION_SYSTEM, "messages": messages},
+                )
+                r.raise_for_status()
+                data = r.json()
+        except Exception as e:
+            last_result = {"success": False, "result": f"Claude error: {e}"}
+            break
+
+        text = " ".join(b["text"] for b in data.get("content", []) if b.get("type") == "text")
+        m = re.search(r"\{[\s\S]*?\}", text)
+        if not m:
+            last_result = {"success": False, "result": "Sin JSON de Claude"}
+            break
+        try:
+            action_data = json.loads(m.group())
+        except Exception:
+            last_result = {"success": False, "result": "JSON inválido"}
+            break
+
+        history.append({"role": "user", "content": f"Tarea: {task} Paso {step+1}. ¿Siguiente acción?"})
+        history.append({"role": "assistant", "content": text})
+        if len(history) > 12:
+            history = history[-12:]
+
+        action = action_data.get("action", "done")
+        if action == "done":
+            last_result = {"success": action_data.get("success", True), "result": action_data.get("result", "")}
+            break
+
+        # Envía comando al agente local
+        cmd_map = {
+            "open_url":  {"type": "open_url",  "url":     action_data.get("url", "")},
+            "open_app":  {"type": "open_app",  "app":     action_data.get("app", "")},
+            "click":     {"type": "click",     "x":       action_data.get("x", 0), "y": action_data.get("y", 0)},
+            "type":      {"type": "type",      "text":    action_data.get("text", "")},
+            "hotkey":    {"type": "hotkey",    "keys":    action_data.get("keys", [])},
+            "shell":     {"type": "shell",     "command": action_data.get("command", "")},
+            "screenshot":{"type": "screenshot"},
+        }
+        local_cmd = cmd_map.get(action)
+        if not local_cmd:
+            continue
+
+        cmd_id = str(_uuid.uuid4())[:8]
+        _agent_queue.append({"id": cmd_id, "command": local_cmd})
+
+        # Espera resultado y toma nueva screenshot si necesario
+        deadline = asyncio.get_event_loop().time() + 8
+        exec_result = None
+        while asyncio.get_event_loop().time() < deadline:
+            if cmd_id in _agent_results:
+                exec_result = _agent_results.pop(cmd_id)
+                break
+            await asyncio.sleep(0.4)
+
+        # Solicita nueva screenshot para el próximo paso
+        screenshot_b64 = exec_result.get("screenshot_b64", "") if exec_result else ""
+        if not screenshot_b64:
+            ss_cmd_id = str(_uuid.uuid4())[:8]
+            _agent_queue.append({"id": ss_cmd_id, "command": {"type": "screenshot"}})
+            screenshot_b64 = ""  # se llenará al inicio del próximo loop
+
+    if last_result.get("success"):
+        await telegram_notify(f"🖥️ *AURUM controlando tu PC*\n_{task}_\n\nResultado: {last_result.get('result','')[:400]}")
+
+    return last_result
 
 
 if __name__ == "__main__":
