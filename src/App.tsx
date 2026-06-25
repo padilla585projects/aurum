@@ -2926,13 +2926,17 @@ function BackendSection() {
   );
 }
 
-function AutonomousSection() {
+function AutonomousSection({ profile }: { profile: string }) {
   const [monCfg,  setMonCfg]  = useState<AutonomousConfig>(() => loadAutonomousConfig());
   const [autoCfg, setAutoCfg] = useState<AutoInvestConfig>(() => loadAutoConfig());
   const [perf,    setPerf]    = useState(() => evaluateAurumPerformance());
   const [log,     setLog]     = useState<ActionLogEntry[]>(() => [...loadActionLog()].reverse().slice(0, 10));
   const [lessons, setLessons] = useState<Lesson[]>(() => loadLessons());
-  const [syncMsg, setSyncMsg] = useState('');
+  const [syncMsg,   setSyncMsg]   = useState('');
+  const [runMsg,    setRunMsg]    = useState('');
+  const [running,   setRunning]   = useState(false);
+  const [backendLog, setBackendLog] = useState<any[]>([]);
+  const [backendStatus, setBackendStatus] = useState<any>(null);
   const fs: React.CSSProperties = { ...inputBase, padding:'8px 12px' };
 
   const updateMon  = (patch: Partial<AutonomousConfig>) => { const n = {...monCfg,...patch}; setMonCfg(n); saveAutonomousConfig(n); };
@@ -2955,6 +2959,12 @@ function AutonomousSection() {
     if (!cfg?.url) { setSyncMsg('Sin backend configurado'); return; }
     setSyncMsg('Sincronizando…');
     try {
+      // Mapas de perfil → asignación objetivo
+      const allocMap: Record<string,string> = {
+        conservador: '40% renta variable, 40% bonos/renta fija, 20% liquidez',
+        moderado:    '65% renta variable, 25% bonos, 10% alternativos/oro',
+        agresivo:    '90% renta variable diversificada, 10% activos alternativos',
+      };
       const res = await fetch(`${cfg.url.replace(/\/$/,'')}/schedule`, {
         method: 'POST',
         headers: { 'Content-Type':'application/json', 'X-AURUM-KEY': cfg.apiKey },
@@ -2962,11 +2972,58 @@ function AutonomousSection() {
           enabled:        autoCfg.enabled,
           interval_hours: autoCfg.runInterval === 'daily' ? 24 : autoCfg.runInterval === 'weekly' ? 168 : 720,
           max_amount:     autoCfg.maxAmountPerRun,
+          profile,
+          target_alloc:   allocMap[profile] || '',
+          user_goals:     '',
         }),
       });
-      setSyncMsg(res.ok ? '✓ Backend sincronizado' : `Error ${res.status}`);
+      if (res.ok) {
+        setSyncMsg('✓ Backend sincronizado con tu perfil');
+        await fetchBackendLog(cfg);
+      } else { setSyncMsg(`Error ${res.status}`); }
     } catch(e:any) { setSyncMsg(`Error: ${e.message}`); }
-    setTimeout(() => setSyncMsg(''), 3000);
+    setTimeout(() => setSyncMsg(''), 4000);
+  };
+
+  const fetchBackendLog = async (cfgOverride?: any) => {
+    const cfg = cfgOverride || await sGet('aurum-backend-config');
+    if (!cfg?.url) return;
+    try {
+      const r = await fetch(`${cfg.url.replace(/\/$/,'')}/auto-log`, { headers: { 'X-AURUM-KEY': cfg.apiKey } });
+      if (r.ok) {
+        const data = await r.json();
+        setBackendLog(data.log || []);
+        setBackendStatus(data);
+      }
+    } catch { /* sin backend */ }
+  };
+
+  useEffect(() => { fetchBackendLog(); }, []);
+
+  const runNow = async () => {
+    const cfg = await sGet('aurum-backend-config');
+    if (!cfg?.url) { setRunMsg('Sin backend configurado'); return; }
+    if (!cfg.apiKey) { setRunMsg('Sin API key'); return; }
+    setRunning(true); setRunMsg('');
+    try {
+      const r = await fetch(`${cfg.url.replace(/\/$/,'')}/run-now`, {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json', 'X-AURUM-KEY': cfg.apiKey },
+        body: JSON.stringify({ reason: 'disparo manual desde la app' }),
+      });
+      const data = await r.json();
+      if (r.ok) {
+        const action = data.action || 'hold';
+        if (action === 'hold') {
+          setRunMsg(`⏸ Decisión: mantener. ${data.reasoning?.slice(0,80) || ''}`);
+        } else {
+          const total = data.total_exec || 0;
+          setRunMsg(`✅ Ejecutado: ${total.toFixed(0)}€ invertidos`);
+        }
+        await fetchBackendLog(cfg);
+      } else { setRunMsg(`Error ${r.status}: ${JSON.stringify(data).slice(0,80)}`); }
+    } catch(e:any) { setRunMsg(`Error: ${e.message}`); }
+    setRunning(false);
   };
 
   return (
@@ -3021,20 +3078,88 @@ function AutonomousSection() {
               ⚠️ Modo total activo: AURUM ejecutará órdenes en TR automáticamente, sin pedirte confirmación. Asegúrate de que el backend está autenticado y el presupuesto es el que quieres.
             </div>
           )}
-          <div style={{ display:'flex', alignItems:'center', gap:10, marginTop:8 }}>
-            <button onClick={syncBackend} style={{ background:`${C.blue}18`, border:`1px solid ${C.blue}44`, borderRadius:8, padding:'6px 14px', color:C.blue, cursor:'pointer', fontSize:'.75em', fontFamily:"'Sora',sans-serif" }}>
-              Sincronizar con backend →
+          {/* Botones de control */}
+          <div style={{ display:'flex', flexWrap:'wrap', gap:8, marginTop:12 }}>
+            <button onClick={syncBackend} style={{ background:`${C.blue}18`, border:`1px solid ${C.blue}44`, borderRadius:8, padding:'7px 14px', color:C.blue, cursor:'pointer', fontSize:'.75em', fontFamily:"'Sora',sans-serif" }}>
+              ⚙️ Sincronizar configuración
             </button>
-            {syncMsg && <span style={{ fontSize:'.7em', color: syncMsg.startsWith('✓') ? C.green : syncMsg.includes('Error') ? C.red : C.muted }}>{syncMsg}</span>}
+            <button onClick={runNow} disabled={running}
+              style={{ background:running?'#1a1a28':`${C.gold}18`, border:`1px solid ${running?C.border:C.gold+'55'}`, borderRadius:8, padding:'7px 14px', color:running?C.muted:C.gold, cursor:running?'not-allowed':'pointer', fontSize:'.75em', fontFamily:"'Sora',sans-serif", display:'flex', alignItems:'center', gap:6 }}>
+              {running ? <><Spinner/>Ejecutando…</> : '🚀 Ejecutar Ahora'}
+            </button>
+            <button onClick={() => fetchBackendLog()} style={{ background:'transparent', border:`1px solid ${C.border2}`, borderRadius:8, padding:'7px 14px', color:C.muted, cursor:'pointer', fontSize:'.75em', fontFamily:"'Sora',sans-serif" }}>
+              ↺ Actualizar log
+            </button>
           </div>
-          {autoCfg.lastRunAt > 0 && <div style={{ fontSize:'.62em', color:C.faint }}>Último ciclo: {new Date(autoCfg.lastRunAt).toLocaleString('es-ES')}</div>}
+          {syncMsg && <div style={{ fontSize:'.7em', color: syncMsg.startsWith('✓') ? C.green : syncMsg.includes('Error') ? C.red : C.muted, marginTop:6 }}>{syncMsg}</div>}
+          {runMsg  && <div style={{ fontSize:'.7em', color: runMsg.startsWith('✅') ? C.green : runMsg.startsWith('⏸') ? C.gold : C.red, marginTop:4, lineHeight:1.4 }}>{runMsg}</div>}
         </div>
       </div>
 
-      {/* Log de acciones autónomas */}
+      {/* ── Panel de estado del backend ──────────────────────── */}
+      {backendStatus && (
+        <div style={{ background:`${backendStatus.auto_enabled ? C.green : C.faint}08`, border:`1px solid ${backendStatus.auto_enabled ? C.green+'33' : C.border}`, borderRadius:13, padding:'14px 18px' }}>
+          <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:10 }}>
+            <div style={{ width:8, height:8, borderRadius:'50%', background: backendStatus.auto_enabled ? C.green : C.muted, boxShadow: backendStatus.auto_enabled ? `0 0 8px ${C.green}` : 'none' }} />
+            <span style={{ fontSize:'.8em', fontWeight:600, color: backendStatus.auto_enabled ? C.green : C.muted }}>
+              Backend autónomo {backendStatus.auto_enabled ? 'ACTIVO 🤖' : 'inactivo'}
+            </span>
+            <span style={{ fontSize:'.68em', color:C.faint, marginLeft:'auto' }}>
+              Perfil: {backendStatus.profile || '—'} · Máx: {backendStatus.max_amount || 0}€/{backendStatus.interval_h || 168}h
+            </span>
+          </div>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
+            <div style={{ padding:'8px 12px', background:C.surf3, borderRadius:8 }}>
+              <div style={{ fontSize:'.58em', color:C.muted, marginBottom:3 }}>Último ciclo</div>
+              <div style={{ fontSize:'.78em', color:C.text, fontFamily:"'DM Mono',monospace" }}>
+                {backendStatus.last_run ? new Date(backendStatus.last_run).toLocaleString('es-ES',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—'}
+              </div>
+            </div>
+            <div style={{ padding:'8px 12px', background:C.surf3, borderRadius:8 }}>
+              <div style={{ fontSize:'.58em', color:C.muted, marginBottom:3 }}>Próximo ciclo</div>
+              <div style={{ fontSize:'.78em', color:C.gold, fontFamily:"'DM Mono',monospace" }}>
+                {backendStatus.next_run ? new Date(backendStatus.next_run).toLocaleString('es-ES',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—'}
+              </div>
+            </div>
+          </div>
+
+          {/* Log del backend */}
+          {backendLog.length > 0 && (
+            <div style={{ marginTop:12 }}>
+              <div style={{ fontSize:'.62em', letterSpacing:'1.5px', color:C.muted, textTransform:'uppercase', marginBottom:8 }}>Historial del backend</div>
+              <div style={{ display:'flex', flexDirection:'column', gap:5 }}>
+                {backendLog.slice(0,8).map((entry,i) => {
+                  const isInvest = entry.type === 'invest' || entry.type === 'rebalance';
+                  const hasTrades = Array.isArray(entry.trades) && entry.trades.length > 0;
+                  return (
+                    <div key={i} style={{ padding:'8px 12px', background:C.surf3, border:`1px solid ${isInvest&&hasTrades ? C.green+'22' : C.border}`, borderRadius:8 }}>
+                      <div style={{ display:'flex', alignItems:'center', gap:7 }}>
+                        <span style={{ fontSize:'.85em' }}>{isInvest && hasTrades ? '✅' : '⏸️'}</span>
+                        <span style={{ fontSize:'.75em', fontWeight:600, color: isInvest && hasTrades ? C.green : C.muted }}>
+                          {entry.type?.toUpperCase() || 'HOLD'}
+                        </span>
+                        {hasTrades && <span style={{ fontSize:'.68em', color:C.gold, fontFamily:"'DM Mono',monospace" }}>
+                          {(entry.trades as any[]).filter(t=>t.status==='ok').map((t:any)=>t.ticker).join(', ')} · {entry.total?.toFixed(0) || 0}€
+                        </span>}
+                        <span style={{ fontSize:'.6em', color:C.faint, marginLeft:'auto' }}>
+                          {entry.ts ? new Date(entry.ts).toLocaleString('es-ES',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : ''}
+                        </span>
+                      </div>
+                      {entry.reasoning && <div style={{ fontSize:'.67em', color:C.muted, marginTop:3, lineHeight:1.4 }}>{entry.reasoning.slice(0,120)}</div>}
+                      {entry.trigger && <div style={{ fontSize:'.62em', color:C.faint, marginTop:2 }}>🔁 {entry.trigger}</div>}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Log de acciones autónomas (frontend) */}
       {log.length > 0 && (
         <div>
-          <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.1em', fontWeight:600, color:C.goldL, marginBottom:10 }}>Log de Acciones de AURUM</div>
+          <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.1em', fontWeight:600, color:C.goldL, marginBottom:10 }}>Log de Acciones (app)</div>
           <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
             {log.map(entry => (
               <div key={entry.id} style={{ padding:'10px 12px', background:C.surf2, border:`1px solid ${entry.executed?C.green+'33':C.border}`, borderRadius:9 }}>
@@ -3463,7 +3588,7 @@ function SettingsTab({ profile, setProfile, userProfile, setUserProfile }:{
         <BackendSection />
 
         {/* Monitorización autónoma */}
-        <AutonomousSection />
+        <AutonomousSection profile={profile} />
 
         {/* Versión + OTA checker */}
         <VersionCard />

@@ -120,143 +120,276 @@ _auto_cfg: dict = {
     "interval_hours":  168,   # 1 semana por defecto
     "max_amount":      100.0,
     "last_run":        None,
+    # ── Perfil del inversor (sincronizado desde el frontend) ──────────────
+    "profile":         "moderado",
+    "target_alloc":    "",          # ej: "70% renta variable, 20% bonos, 10% liquidez"
+    "user_goals":      "",          # ej: "jubilación en 20 años, ahorro 500€/mes"
+    # ── Log de ejecuciones autónomas ─────────────────────────────────────
+    "action_log":      [],          # últimas 20 ejecuciones
 }
 
-_AUTO_INVEST_SYSTEM = """\
-Eres AURUM, gestor de inversiones autónomo. El servidor te ha activado para ejecutar el ciclo de inversión periódico.
-Usa búsqueda web para obtener el estado actual del mercado (índices, tipos de interés, sentimiento).
+# ── Triggers inteligentes ─────────────────────────────────────────────────────
+# Umbrales para disparar el ciclo inmediatamente (sin esperar el intervalo)
+_TRIGGER_CFG = {
+    "market_drop_pct":  -3.0,   # SP500 cae >3% → comprar oportunidad
+    "drift_threshold":   15.0,  # drift de cartera >15% → rebalancear ya
+    "new_cash_min":      20.0,  # nuevo saldo disponible >20€ → invertir
+}
+_last_market_check: Optional[datetime] = None
+_last_sp500_price:  Optional[float]    = None
 
-Analiza la cartera actual y decide cómo invertir el presupuesto disponible.
+_PROFILE_META = {
+    "conservador": {
+        "label":  "Conservador",
+        "desc":   "Preservar capital. Tolerancia a pérdidas baja (máx -10%). Horizonte corto-medio.",
+        "alloc":  "40% renta variable, 40% bonos/renta fija, 20% liquidez",
+        "etfs":   "XEON (monetario), AGGU (bonos globales), EUNL (RV mundo), VHYL (dividendos)",
+    },
+    "moderado": {
+        "label":  "Moderado",
+        "desc":   "Crecimiento equilibrado. Tolerancia media (-20%). Horizonte 5-10 años.",
+        "alloc":  "65% renta variable, 25% bonos, 10% alternativos/oro",
+        "etfs":   "VWCE (mundo), SPPW (S&P500), EUNL (Europa), XEON (monetario), SGLN (oro)",
+    },
+    "agresivo": {
+        "label":  "Agresivo",
+        "desc":   "Maximizar rentabilidad a largo plazo. Alta tolerancia (-40%). Horizonte >10 años.",
+        "alloc":  "90% renta variable (diversificada), 10% activos alternativos",
+        "etfs":   "VWCE (mundo), SPPW (S&P500), ZPRV (small-cap value), IEMA (emergentes), QDVE (tech)",
+    },
+}
+
+def _build_auto_system(profile: str, target_alloc: str = "", user_goals: str = "") -> str:
+    pm = _PROFILE_META.get(profile, _PROFILE_META["moderado"])
+    alloc = target_alloc or pm["alloc"]
+    goals_block = f"\nOBJETIVOS DEL INVERSOR: {user_goals}" if user_goals else ""
+    return f"""\
+Eres AURUM, gestor de inversiones autónomo con plena autorización del usuario para ejecutar operaciones.
+Usa búsqueda web para obtener datos de mercado en tiempo real antes de decidir.
+
+PERFIL DEL INVERSOR: {pm["label"]} — {pm["desc"]}
+ASIGNACIÓN OBJETIVO: {alloc}
+ETFs PREFERIDOS PARA ESTE PERFIL: {pm["etfs"]}{goals_block}
+
+MISIÓN: Analiza la cartera, el mercado actual y decide la mejor inversión para el presupuesto disponible.
 Responde SOLO con JSON válido (sin texto adicional, sin backticks):
-{
-  "action": "invest",
+{{
+  "action": "invest|rebalance|hold",
   "trades": [
-    {"ticker": "VWCE", "isin": "IE00B3RBWM25", "name": "Vanguard FTSE All-World", "amount": 80}
+    {{"ticker": "VWCE", "isin": "IE00B3RBWM25", "name": "Vanguard FTSE All-World", "amount": 80}}
   ],
-  "reasoning": "Razonamiento breve (1-2 frases) explicando la decisión basada en el mercado actual.",
-  "marketBrief": "Una frase sobre el estado del mercado hoy."
-}
+  "reasoning": "2-3 frases explicando la decisión y contexto de mercado actual.",
+  "marketBrief": "Una frase sobre el estado del mercado hoy.",
+  "confidence": 0.85
+}}
 
-Si no es buen momento para invertir (alta incertidumbre, evento inminente), devuelve:
-{"action": "hold", "reasoning": "motivo claro", "marketBrief": "contexto"}
+Si no es buen momento → {{"action": "hold", "reasoning": "motivo", "marketBrief": "contexto", "confidence": 0.5}}
+Si hay drift de cartera → usa "rebalance" con trades que corrijan la asignación objetivo.
 
-Reglas:
-- Los importes en trades deben sumar exactamente el presupuesto indicado.
-- Máximo 4 instrumentos si presupuesto < 500€, hasta 6 si ≥ 500€.
-- Solo ETFs disponibles en Trade Republic España.
-- ETFs preferidos: VWCE, XEON, SPPW, SGLN, EUNL, VUSA, IEMA, ZPRV.
-- No duplicar posiciones existentes salvo que rebalanceo lo justifique.
+REGLAS:
+- Los importes en trades deben sumar ≤ el presupuesto indicado.
+- Máximo 4 instrumentos si presupuesto < 500€; hasta 6 si ≥ 500€.
+- Solo instrumentos disponibles en Trade Republic España.
+- No duplicar posiciones a menos que sea rebalanceo justificado.
 - Mínimo 10€ por instrumento.
+- Confidence < 0.7 → acción "hold" aunque haya oportunidad (más vale no actuar que actuar mal).
 """
+
+def _log_action(entry: dict) -> None:
+    """Añade una entrada al log de acciones autónomas (máx 50)."""
+    log: list = _auto_cfg.get("action_log", [])
+    log.append({**entry, "ts": datetime.now().isoformat()})
+    _auto_cfg["action_log"] = log[-50:]
+
+
+async def _check_smart_triggers() -> Optional[str]:
+    """
+    Comprueba si hay un evento de mercado que justifique ejecutar el ciclo ahora.
+    Devuelve una razón de trigger, o None si no hay.
+    """
+    global _last_market_check, _last_sp500_price
+
+    # No más de una comprobación cada 30 minutos
+    if _last_market_check and (datetime.now() - _last_market_check).total_seconds() < 1800:
+        return None
+    _last_market_check = datetime.now()
+
+    try:
+        prices = await _yahoo_prices(["SP500"])
+        sp500 = prices.get("SP500", 0)
+        if not sp500:
+            return None
+
+        if _last_sp500_price and _last_sp500_price > 0:
+            change_pct = (sp500 - _last_sp500_price) / _last_sp500_price * 100
+            drop_threshold = _TRIGGER_CFG["market_drop_pct"]
+            if change_pct <= drop_threshold:
+                logger.info(f"[Trigger] Caída de mercado detectada: S&P500 {change_pct:+.1f}%")
+                _last_sp500_price = sp500
+                return f"Caída de mercado S&P500 {change_pct:+.1f}% — oportunidad de compra"
+
+        _last_sp500_price = sp500
+    except Exception as e:
+        logger.debug(f"[Trigger] Error comprobando mercado: {e}")
+
+    # Comprobar saldo disponible
+    try:
+        if tr.authenticated:
+            await tr.ensure_connected()
+            cash = await tr.get_cash()
+            if cash >= _TRIGGER_CFG["new_cash_min"] and cash >= _auto_cfg["max_amount"] * 0.5:
+                return f"Nuevo saldo disponible: {cash:.0f}€ — listo para invertir"
+    except Exception:
+        pass
+
+    return None
+
+
+async def _execute_auto_cycle(trigger_reason: str = "ciclo programado") -> dict:
+    """
+    Ciclo autónomo completo:
+      1. Obtiene cartera y saldo de TR
+      2. Llama a Claude (perfil del inversor) con web search para decidir
+      3. Ejecuta las órdenes directamente en TR
+      4. Notifica y loguea el resultado
+    Devuelve un dict con el resultado del ciclo.
+    """
+    logger.info(f"[Auto] Iniciando ciclo — trigger: {trigger_reason}")
+
+    await tr.ensure_connected()
+    positions = await tr.get_portfolio()
+    cash      = await tr.get_cash()
+    budget    = min(_auto_cfg["max_amount"], cash)
+
+    if budget < 10:
+        logger.info(f"[Auto] Saldo insuficiente ({cash:.2f}€)")
+        await telegram_notify(f"⚠️ *AURUM Auto*: saldo insuficiente (*{cash:.2f}€*). Recarga tu cuenta de TR.")
+        return {"action": "hold", "reason": "saldo insuficiente", "executed": 0}
+
+    # Construir contexto de cartera
+    portfolio_lines = "\n".join(
+        f"  {p.get('name','?')}: {p.get('value',0):.0f}€ ({p.get('pnl_pct',0):+.1f}%)"
+        for p in positions
+    ) or "  (cartera vacía)"
+    total_val = sum(p.get("value", 0) for p in positions)
+
+    # Calcular drift aproximado respecto a asignación objetivo
+    profile      = _auto_cfg.get("profile", "moderado")
+    target_alloc = _auto_cfg.get("target_alloc", "")
+    user_goals   = _auto_cfg.get("user_goals", "")
+
+    user_msg = (
+        f"Ciclo autónomo — {datetime.now().strftime('%d/%m/%Y %H:%M')}\n"
+        f"Trigger: {trigger_reason}\n"
+        f"Presupuesto disponible: {budget:.2f}€\n"
+        f"Valor total cartera: {total_val:.0f}€\n"
+        f"Posiciones actuales:\n{portfolio_lines}\n\n"
+        f"1. Consulta el estado actual del mercado con búsqueda web.\n"
+        f"2. Analiza si la cartera está desalineada con el objetivo.\n"
+        f"3. Decide la mejor inversión para {budget:.0f}€ dado el contexto."
+    )
+
+    logger.info(f"[Auto] Llamando a Claude (perfil={profile}) para decidir inversión de {budget:.0f}€…")
+    system = _build_auto_system(profile, target_alloc, user_goals)
+    raw    = await _call_claude(system, user_msg, max_tokens=1024, web_search=True)
+
+    match = re.search(r"\{[\s\S]*\}", raw)
+    if not match:
+        raise ValueError(f"Claude no devolvió JSON válido: {raw[:200]}")
+    plan = json.loads(match.group())
+
+    action       = plan.get("action", "hold")
+    reasoning    = plan.get("reasoning", "")
+    market_brief = plan.get("marketBrief", "")
+    confidence   = plan.get("confidence", 0.8)
+
+    _auto_cfg["last_run"] = datetime.now()
+
+    if action == "hold" or confidence < 0.7:
+        msg = f"⏸️ *AURUM Auto: mantener posiciones*\n\n💬 _{reasoning}_\n📊 {market_brief}"
+        logger.info(f"[Auto] Decisión: HOLD — {reasoning}")
+        await telegram_notify(msg)
+        _log_action({"type": "hold", "reasoning": reasoning, "market": market_brief, "trigger": trigger_reason})
+        return {"action": "hold", "reasoning": reasoning, "executed": 0}
+
+    trades = plan.get("trades", [])
+    if not trades:
+        return {"action": "hold", "reasoning": "Sin trades generados", "executed": 0}
+
+    # Ejecutar órdenes en TR
+    results = []
+    for t in trades:
+        try:
+            logger.info(f"[Auto] Ejecutando {t['amount']:.0f}€ de {t['ticker']}…")
+            order = await tr.buy_cash_amount(t["isin"], t["amount"])
+            results.append({"ticker": t["ticker"], "amount": t["amount"], "status": "ok", "id": order.get("id","")})
+        except Exception as e:
+            logger.error(f"[Auto] Error orden {t['ticker']}: {e}")
+            results.append({"ticker": t["ticker"], "amount": t["amount"], "status": "error", "error": str(e)})
+
+    executed_list = [r for r in results if r["status"] == "ok"]
+    total_exec    = sum(r["amount"] for r in executed_list)
+
+    trades_txt = "\n".join(f"  ✅ *{r['ticker']}*: {r['amount']:.0f}€" for r in executed_list)
+    failed_txt = "\n".join(f"  ❌ {r['ticker']}: {r.get('error','?')[:40]}" for r in results if r["status"] == "error")
+    if failed_txt:
+        trades_txt += "\n" + failed_txt
+
+    interval_h = _auto_cfg.get("interval_hours", 168)
+    logger.info(f"[Auto] Ciclo completado: {len(executed_list)}/{len(results)} ejecutadas, {total_exec:.0f}€")
+    await telegram_notify(
+        f"🤖 *AURUM ejecutó ciclo autónomo*\n\n"
+        f"{trades_txt}\n\n"
+        f"💰 Total invertido: *{total_exec:.0f}€*\n"
+        f"📊 {market_brief}\n"
+        f"💬 _{reasoning}_\n\n"
+        f"🔁 Trigger: _{trigger_reason}_\n"
+        f"_Próximo ciclo programado en ~{interval_h}h_"
+    )
+
+    _log_action({
+        "type":     action,
+        "trades":   [{"ticker": r["ticker"], "amount": r["amount"], "status": r["status"]} for r in results],
+        "total":    total_exec,
+        "reasoning": reasoning,
+        "market":   market_brief,
+        "trigger":  trigger_reason,
+        "confidence": confidence,
+    })
+    return {"action": action, "trades": results, "total_exec": total_exec, "reasoning": reasoning}
+
 
 async def _run_auto_cycle():
     """
-    Ciclo autónomo completo del servidor:
-      1. Comprueba autenticación y timing
-      2. Obtiene cartera y saldo de TR
-      3. Llama a Claude con web search para decidir inversión
-      4. Ejecuta las órdenes directamente en TR
-      5. Notifica via Telegram con resultado
+    Loop principal del scheduler autónomo:
+    - Revisa cada hora si hay triggers inteligentes o si toca ciclo programado
+    - Delega la ejecución a _execute_auto_cycle()
     """
     while True:
         await asyncio.sleep(3600)  # revisar cada hora
         if not _auto_cfg["enabled"]:
             continue
         if not tr.authenticated:
-            logger.info("[Auto] TR no autenticado — saltando ciclo")
+            logger.info("[Auto] TR no autenticado — saltando")
             continue
 
-        interval_h = _auto_cfg.get("interval_hours", 168)
-        last_run   = _auto_cfg.get("last_run")
-        if last_run:
-            elapsed_h = (datetime.now() - last_run).total_seconds() / 3600
-            if elapsed_h < interval_h:
-                continue
-
-        logger.info("[Auto] Iniciando ciclo autónomo de inversión…")
         try:
-            await tr.ensure_connected()
-            positions = await tr.get_portfolio()
-            cash      = await tr.get_cash()
-            budget    = min(_auto_cfg["max_amount"], cash)
-
-            if budget < 10:
-                logger.info(f"[Auto] Saldo insuficiente ({cash:.2f}€)")
-                await telegram_notify(f"⚠️ AURUM Auto: saldo insuficiente (*{cash:.2f}€*). Recarga tu cuenta de TR.")
-                _auto_cfg["last_run"] = datetime.now()
+            # 1. Comprobar triggers inteligentes
+            trigger = await _check_smart_triggers()
+            if trigger:
+                logger.info(f"[Auto] Smart trigger activado: {trigger}")
+                await _execute_auto_cycle(trigger)
                 continue
 
-            # Construir contexto de cartera para Claude
-            portfolio_str = ", ".join(
-                f"{p.get('name','?')}({p.get('value',0):.0f}€, {p.get('pnl_pct',0):+.1f}%)"
-                for p in positions
-            ) or "cartera vacía"
-            total_val = sum(p.get("value", 0) for p in positions)
+            # 2. Comprobar ciclo programado
+            interval_h = _auto_cfg.get("interval_hours", 168)
+            last_run   = _auto_cfg.get("last_run")
+            if last_run:
+                elapsed_h = (datetime.now() - last_run).total_seconds() / 3600
+                if elapsed_h < interval_h:
+                    continue
 
-            user_msg = (
-                f"Ciclo autónomo — {datetime.now().strftime('%d/%m/%Y %H:%M')}\n"
-                f"Presupuesto disponible: {budget:.2f}€\n"
-                f"Cartera actual: {portfolio_str}\n"
-                f"Valor total cartera: {total_val:.0f}€\n\n"
-                f"Analiza el mercado actual con búsqueda web y decide la mejor inversión para este presupuesto."
-            )
-
-            logger.info(f"[Auto] Llamando a Claude para decidir inversión de {budget:.2f}€…")
-            raw = await _call_claude(_AUTO_INVEST_SYSTEM, user_msg, max_tokens=1024, web_search=True)
-
-            match = re.search(r"\{[\s\S]*\}", raw)
-            if not match:
-                raise ValueError(f"Claude no devolvió JSON válido: {raw[:200]}")
-            plan = json.loads(match.group())
-
-            action = plan.get("action", "hold")
-            reasoning  = plan.get("reasoning", "")
-            market_brief = plan.get("marketBrief", "")
-
-            _auto_cfg["last_run"] = datetime.now()
-
-            if action == "hold":
-                logger.info(f"[Auto] Decisión: HOLD — {reasoning}")
-                await telegram_notify(
-                    f"⏸️ *AURUM Auto: mantener posiciones*\n\n"
-                    f"💬 _{reasoning}_\n"
-                    f"📊 {market_brief}"
-                )
-                continue
-
-            trades = plan.get("trades", [])
-            if not trades:
-                logger.info("[Auto] No hay trades en la decisión")
-                continue
-
-            # Ejecutar órdenes en TR
-            results = []
-            for t in trades:
-                try:
-                    logger.info(f"[Auto] Ejecutando {t['amount']:.0f}€ de {t['ticker']}…")
-                    order = await tr.buy_cash_amount(t["isin"], t["amount"])
-                    results.append({"ticker": t["ticker"], "amount": t["amount"], "status": "ok", "id": order.get("id","")})
-                except Exception as e:
-                    logger.error(f"[Auto] Error orden {t['ticker']}: {e}")
-                    results.append({"ticker": t["ticker"], "amount": t["amount"], "status": "error", "error": str(e)})
-
-            executed   = [r for r in results if r["status"] == "ok"]
-            failed     = [r for r in results if r["status"] == "error"]
-            total_exec = sum(r["amount"] for r in executed)
-
-            trades_txt = "\n".join(f"  ✅ *{r['ticker']}*: {r['amount']:.0f}€" for r in executed)
-            if failed:
-                trades_txt += "\n" + "\n".join(f"  ❌ {r['ticker']}: {r.get('error','?')[:40]}" for r in failed)
-
-            logger.info(f"[Auto] Ciclo completado: {len(executed)}/{len(results)} órdenes ejecutadas, {total_exec:.0f}€")
-            await telegram_notify(
-                f"🤖 *AURUM ejecutó ciclo autónomo*\n\n"
-                f"{trades_txt}\n\n"
-                f"💰 Total invertido: *{total_exec:.0f}€*\n"
-                f"💬 _{reasoning}_\n"
-                f"📊 {market_brief}\n\n"
-                f"_Próximo ciclo en {interval_h}h_"
-            )
+            await _execute_auto_cycle("ciclo programado")
 
         except Exception as e:
             logger.error(f"[Auto] Error en ciclo: {e}")
@@ -345,6 +478,10 @@ class ScheduleConfig(BaseModel):
     enabled:        bool
     interval_hours: int   = 168
     max_amount:     float = 100.0
+    # Perfil e intenciones del inversor (opcionales)
+    profile:        str   = "moderado"   # conservador | moderado | agresivo
+    target_alloc:   str   = ""           # asignación objetivo libre
+    user_goals:     str   = ""           # objetivos del inversor
 
 class SellItem(BaseModel):
     ticker: str
@@ -539,16 +676,68 @@ async def configure_schedule(body: ScheduleConfig, x_aurum_key: str = Header(def
         "enabled":        body.enabled,
         "interval_hours": body.interval_hours,
         "max_amount":     body.max_amount,
+        "profile":        body.profile,
+        "target_alloc":   body.target_alloc,
+        "user_goals":     body.user_goals,
     })
     status_str = "activado" if body.enabled else "desactivado"
-    logger.info(f"Schedule {status_str}: intervalo={body.interval_hours}h, máx={body.max_amount}€")
+    pm = _PROFILE_META.get(body.profile, _PROFILE_META["moderado"])
+    logger.info(f"Schedule {status_str}: perfil={body.profile}, intervalo={body.interval_hours}h, máx={body.max_amount}€")
     if body.enabled:
         await telegram_notify(
             f"⚙️ *AURUM modo autónomo {status_str}*\n"
+            f"Perfil: {pm['label']}\n"
             f"Intervalo: cada {body.interval_hours}h\n"
-            f"Presupuesto máximo: {body.max_amount:.0f}€/ciclo"
+            f"Presupuesto máximo: {body.max_amount:.0f}€/ciclo\n"
+            f"Asignación objetivo: {body.target_alloc or pm['alloc']}"
         )
-    return {"status": "ok", "auto_enabled": _auto_cfg["enabled"]}
+    return {"status": "ok", "auto_enabled": _auto_cfg["enabled"], "profile": body.profile}
+
+
+@app.post("/run-now")
+async def run_now(body: dict = {}, x_aurum_key: str = Header(default="")):
+    """
+    Dispara inmediatamente un ciclo autónomo completo, sin esperar al intervalo.
+    Útil para: oportunidades puntuales, primer setup, test.
+    """
+    require_key(x_aurum_key)
+    if not tr.authenticated:
+        raise HTTPException(401, "No autenticado en Trade Republic")
+
+    reason = body.get("reason", "disparo manual desde la app")
+    logger.info(f"[RunNow] Ciclo forzado: {reason}")
+
+    # Activar temporalmente si no está activado (solo para este ciclo)
+    was_enabled = _auto_cfg.get("enabled", False)
+    _auto_cfg["enabled"] = True
+
+    try:
+        result = await _execute_auto_cycle(reason)
+    except Exception as e:
+        _auto_cfg["enabled"] = was_enabled
+        raise HTTPException(500, str(e))
+
+    _auto_cfg["enabled"] = was_enabled
+    return result
+
+
+@app.get("/auto-log")
+async def get_auto_log(x_aurum_key: str = Header(default=""), limit: int = 20):
+    """Devuelve el log de ejecuciones autónomas (para mostrar en el frontend)."""
+    require_key(x_aurum_key)
+    log = list(reversed(_auto_cfg.get("action_log", [])))[:limit]
+    return {
+        "log":         log,
+        "auto_enabled": _auto_cfg.get("enabled", False),
+        "profile":     _auto_cfg.get("profile", "moderado"),
+        "max_amount":  _auto_cfg.get("max_amount", 100),
+        "interval_h":  _auto_cfg.get("interval_hours", 168),
+        "last_run":    _auto_cfg["last_run"].isoformat() if _auto_cfg.get("last_run") else None,
+        "next_run":    (
+            (_auto_cfg["last_run"] + timedelta(hours=_auto_cfg.get("interval_hours",168))).isoformat()
+            if _auto_cfg.get("last_run") else None
+        ),
+    }
 
 
 @app.post("/notify")
