@@ -84,7 +84,7 @@ const PIE_PAL = [C.gold, C.blue, C.green, C.purple, '#e8734a','#1abc9c','#e74c3c
 /* ══════════════════════════════════════════════════════════════
    VERSION
 ══════════════════════════════════════════════════════════════ */
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.2.1';
 const APP_BUILD   = '2026.06.24';
 
 /* ══════════════════════════════════════════════════════════════
@@ -970,6 +970,28 @@ function SellModal({ pos, onClose }:{ pos:Position; onClose:()=>void }) {
   );
 }
 
+/* ── Mapas estáticos: divisa y dividendo estimado por ticker ── */
+const CURRENCY_MAP: Record<string, string> = {
+  // ETFs cotizados en EUR (divisa de cotización, no necesariamente de los activos)
+  VWCE:'EUR', XEON:'EUR', SPPW:'EUR', SGLN:'EUR', EUNL:'EUR', VUSA:'EUR',
+  BTCE:'EUR', WGLD:'EUR', IEMA:'EUR', ZPRV:'EUR', IS3N:'EUR', QDVE:'EUR',
+  AGGU:'EUR', XDWD:'EUR', IWDA:'EUR', EXXT:'EUR', VHYL:'EUR', IBTS:'EUR',
+  // Acciones US (cotizan en USD)
+  AAPL:'USD', MSFT:'USD', NVDA:'USD', AMZN:'USD', GOOGL:'USD', TSLA:'USD',
+  META:'USD', NFLX:'USD', ORCL:'USD',
+  // Acciones EU
+  ASML:'EUR', SAP:'EUR', LVMH:'EUR', SAN:'EUR', IBE:'EUR', ITX:'EUR',
+};
+
+// Rentabilidad por dividendo anual estimada (%)
+const YIELD_MAP: Record<string, number> = {
+  VWCE:1.5, VHYL:3.2, EUNL:1.8, XEON:3.8, AGGU:3.5, SPPW:1.3,
+  XDWD:1.8, IWDA:1.8, IEMA:2.1, SGLN:0, BTCE:0, IS3N:3.0,
+  AAPL:0.5, MSFT:0.7, NVDA:0.03, AMZN:0, GOOGL:0, TSLA:0,
+  META:0.4, NFLX:0, ORCL:1.2,
+  SAN:4.2, IBE:5.1, ITX:3.8, ASML:0.8, SAP:1.2, LVMH:2.0,
+};
+
 /* ── Feature 1: Tax Harvesting Card ──────────────────────────── */
 function TaxCard({ portfolio }: { portfolio: Position[] }) {
   const result = taxLossOpportunities(portfolio);
@@ -1007,7 +1029,308 @@ function savePriceAlerts(alerts: PriceAlert[]) {
   try { localStorage.setItem(ALERTS_KEY, JSON.stringify(alerts)); } catch {}
 }
 
-function PortfolioTab({ portfolio, setPortfolio }:{ portfolio:Position[]; setPortfolio:(p:Position[])=>void }) {
+/* ── PortfolioSidePanel — Distribución / Divisas / Dividendos ─ */
+function PortfolioSidePanel({ portfolio, totalVal, chartData }:{ portfolio:Position[]; totalVal:number; chartData:{name:string;value:number}[] }) {
+  const [tab, setTab] = useState<'dist'|'fx'|'div'>('dist');
+
+  // Divisas
+  const fxGroups: Record<string, number> = {};
+  portfolio.forEach(p => {
+    const cur = CURRENCY_MAP[p.ticker.toUpperCase()] || 'EUR';
+    fxGroups[cur] = (fxGroups[cur] || 0) + p.shares * p.currentPrice;
+  });
+  const fxData = Object.entries(fxGroups).map(([name, value]) => ({ name, value: +value.toFixed(0) }));
+  const FX_COLORS: Record<string,string> = { EUR:C.gold, USD:C.blue, GBP:'#9b6cf6', CHF:C.green };
+
+  // Dividendos
+  const divRows = portfolio
+    .map(p => {
+      const y = YIELD_MAP[p.ticker.toUpperCase()] ?? null;
+      if (y === null) return null;
+      const val   = p.shares * p.currentPrice;
+      const annual = val * y / 100;
+      return { ticker: p.ticker, yield: y, annual };
+    })
+    .filter(Boolean) as { ticker:string; yield:number; annual:number }[];
+  const totalDiv = divRows.reduce((a, r) => a + r.annual, 0);
+  const portYield = totalVal ? totalDiv / totalVal * 100 : 0;
+
+  const TABS = [
+    { id:'dist', label:'Distribución' },
+    { id:'fx',   label:'Divisas'      },
+    { id:'div',  label:'Dividendos'   },
+  ] as const;
+
+  return (
+    <Card style={{ padding:'14px 16px' }}>
+      {/* Tab bar */}
+      <div style={{ display:'flex', gap:4, marginBottom:12 }}>
+        {TABS.map(t => (
+          <button key={t.id} onClick={() => setTab(t.id)}
+            style={{ flex:1, background: tab===t.id ? `${C.gold}18` : 'transparent', border:`1px solid ${tab===t.id ? C.gold+'44' : C.border}`, borderRadius:7, padding:'4px 0', cursor:'pointer', fontSize:'.6em', color: tab===t.id ? C.goldL : C.muted, fontFamily:"'Sora',sans-serif", fontWeight: tab===t.id ? 600 : 400, transition:'all .15s' }}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Distribución */}
+      {tab === 'dist' && <>
+        <ResponsiveContainer width="100%" height={160}>
+          <PieChart>
+            <Pie data={chartData} cx="50%" cy="50%" innerRadius={44} outerRadius={72} paddingAngle={2} dataKey="value">
+              {chartData.map((_,i)=><Cell key={i} fill={PIE_PAL[i%PIE_PAL.length]} />)}
+            </Pie>
+            <Tooltip formatter={(v:any)=>[`${v.toLocaleString('es-ES')}€`]} contentStyle={{ background:C.surf3, border:`1px solid ${C.border}`, borderRadius:8, fontSize:'.76em', color:C.text }}/>
+          </PieChart>
+        </ResponsiveContainer>
+        <div style={{ display:'flex', flexDirection:'column', gap:4, marginTop:6 }}>
+          {chartData.map((d,i)=>(
+            <div key={i} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', fontSize:'.7em' }}>
+              <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                <div style={{ width:8, height:8, borderRadius:2, background:PIE_PAL[i%PIE_PAL.length], flexShrink:0 }}/>
+                <span style={{ color:C.muted }}>{d.name}</span>
+              </div>
+              <span style={{ color:C.text, fontFamily:"'DM Mono',monospace" }}>{totalVal?(d.value/totalVal*100).toFixed(1):0}%</span>
+            </div>
+          ))}
+        </div>
+      </>}
+
+      {/* Divisas */}
+      {tab === 'fx' && <>
+        <ResponsiveContainer width="100%" height={160}>
+          <PieChart>
+            <Pie data={fxData} cx="50%" cy="50%" innerRadius={44} outerRadius={72} paddingAngle={3} dataKey="value">
+              {fxData.map((d,i)=><Cell key={i} fill={FX_COLORS[d.name] || PIE_PAL[i]} />)}
+            </Pie>
+            <Tooltip formatter={(v:any)=>[`${v.toLocaleString('es-ES')}€`]} contentStyle={{ background:C.surf3, border:`1px solid ${C.border}`, borderRadius:8, fontSize:'.76em', color:C.text }}/>
+          </PieChart>
+        </ResponsiveContainer>
+        <div style={{ display:'flex', flexDirection:'column', gap:4, marginTop:6 }}>
+          {fxData.map((d,i)=>(
+            <div key={i} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', fontSize:'.7em' }}>
+              <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                <div style={{ width:8, height:8, borderRadius:2, background:FX_COLORS[d.name]||PIE_PAL[i], flexShrink:0 }}/>
+                <span style={{ color:C.muted }}>{d.name}</span>
+              </div>
+              <div style={{ textAlign:'right' }}>
+                <span style={{ color:C.text, fontFamily:"'DM Mono',monospace" }}>{totalVal?(d.value/totalVal*100).toFixed(1):0}%</span>
+                <span style={{ color:C.faint, fontFamily:"'DM Mono',monospace", fontSize:'.85em', marginLeft:6 }}>{d.value.toLocaleString('es-ES',{maximumFractionDigits:0})}€</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </>}
+
+      {/* Dividendos */}
+      {tab === 'div' && <>
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:10 }}>
+          <div style={{ padding:'8px 10px', background:`${C.green}0a`, border:`1px solid ${C.green}33`, borderRadius:8 }}>
+            <div style={{ fontSize:'.58em', color:C.faint, marginBottom:2 }}>Ingresos anuales</div>
+            <div style={{ fontSize:'.9em', fontWeight:700, color:C.green, fontFamily:"'DM Mono',monospace" }}>{totalDiv.toLocaleString('es-ES',{maximumFractionDigits:0})}€</div>
+          </div>
+          <div style={{ padding:'8px 10px', background:`${C.gold}0a`, border:`1px solid ${C.gold}33`, borderRadius:8 }}>
+            <div style={{ fontSize:'.58em', color:C.faint, marginBottom:2 }}>Yield cartera</div>
+            <div style={{ fontSize:'.9em', fontWeight:700, color:C.gold, fontFamily:"'DM Mono',monospace" }}>{portYield.toFixed(2)}%</div>
+          </div>
+        </div>
+        <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
+          {divRows.length === 0
+            ? <div style={{ fontSize:'.7em', color:C.faint }}>Sin datos de dividendos para las posiciones actuales.</div>
+            : divRows.sort((a,b)=>b.annual-a.annual).map(r => (
+              <div key={r.ticker} style={{ display:'flex', alignItems:'center', gap:8, padding:'5px 8px', background:'#0a0a18', borderRadius:7 }}>
+                <span style={{ color:C.gold, fontWeight:600, fontFamily:"'DM Mono',monospace", fontSize:'.78em', minWidth:50 }}>{r.ticker}</span>
+                <span style={{ color:C.muted, fontFamily:"'DM Mono',monospace", fontSize:'.72em' }}>{r.yield.toFixed(1)}%</span>
+                <span style={{ color:C.green, fontFamily:"'DM Mono',monospace", fontSize:'.75em', marginLeft:'auto' }}>+{r.annual.toLocaleString('es-ES',{maximumFractionDigits:0})}€/año</span>
+              </div>
+            ))
+          }
+        </div>
+        <div style={{ fontSize:'.6em', color:C.faint, marginTop:8, fontStyle:'italic' }}>Estimación basada en yield histórico. Los dividendos pasados no garantizan futuros.</div>
+      </>}
+    </Card>
+  );
+}
+
+/* ── Score AURUM ─────────────────────────────────────────────── */
+function calcAurumScore(portfolio: Position[], profile: string) {
+  if (!portfolio.length) return null;
+  const drift   = detectDrift(portfolio, profile);
+  const risk    = portfolioRiskScore(portfolio);
+  const tax     = taxLossOpportunities(portfolio);
+  const totalVal  = portfolio.reduce((a,p) => a + p.shares * p.currentPrice, 0);
+  const totalCost = portfolio.reduce((a,p) => a + p.shares * p.avgPrice, 0);
+  const pnlPct    = totalCost ? (totalVal - totalCost) / totalCost * 100 : 0;
+
+  // 5 dimensiones (100 pts total)
+  const s1 = Math.max(0, Math.round(25 - drift.driftPct * 2.5));            // Alineación perfil  /25
+  const s2 = Math.min(20, Math.round(portfolio.length * 2.5));              // Diversificación    /20
+  const s3 = (() => {                                                        // Riesgo vs perfil   /20
+    if (profile==='agresivo'    && risk.score >= 65) return 20;
+    if (profile==='moderado'    && risk.score >= 35 && risk.score <= 65) return 20;
+    if (profile==='conservador' && risk.score <= 35) return 20;
+    return Math.max(0, 20 - Math.abs(risk.score - (profile==='agresivo'?75:profile==='moderado'?50:25)) / 2);
+  })();
+  const s4 = Math.min(20, Math.max(0, Math.round(10 + pnlPct * 0.5)));     // Rendimiento        /20
+  const s5 = Math.max(0, Math.round(15 - (tax.savings / Math.max(totalVal,1)) * 500)); // Fiscal /15
+
+  const total = Math.min(100, s1 + s2 + Math.round(s3) + s4 + s5);
+  const grade = total >= 85 ? 'A+' : total >= 75 ? 'A' : total >= 65 ? 'B' : total >= 50 ? 'C' : total >= 35 ? 'D' : 'F';
+  const color = total >= 70 ? C.green : total >= 50 ? C.gold : C.red;
+  return {
+    total, grade, color,
+    dims: [
+      { label:'Alineación',    score:s1,            max:25 },
+      { label:'Diversif.',     score:s2,             max:20 },
+      { label:'Riesgo',        score:Math.round(s3), max:20 },
+      { label:'Rendimiento',   score:s4,             max:20 },
+      { label:'Fiscal',        score:s5,             max:15 },
+    ],
+  };
+}
+
+function AurumScoreCard({ portfolio, profile }: { portfolio: Position[]; profile: string }) {
+  const [open, setOpen] = useState(false);
+  const sc = calcAurumScore(portfolio, profile);
+  if (!sc) return null;
+
+  return (
+    <div style={{ background:C.surf2, border:`1px solid ${sc.color}33`, borderRadius:13, padding:'14px 18px', marginBottom:14, cursor:'pointer' }} onClick={() => setOpen(v=>!v)}>
+      <div style={{ display:'flex', alignItems:'center', gap:14 }}>
+        {/* Big score */}
+        <div style={{ textAlign:'center', flexShrink:0 }}>
+          <div style={{ fontSize:'2.4em', fontWeight:800, color:sc.color, fontFamily:"'DM Mono',monospace", lineHeight:1, textShadow:`0 0 20px ${sc.color}66` }}>{sc.total}</div>
+          <div style={{ fontSize:'.62em', color:sc.color, fontFamily:"'DM Mono',monospace", letterSpacing:'1px', marginTop:2 }}>/{100}</div>
+        </div>
+        {/* Grade + label */}
+        <div style={{ flex:1 }}>
+          <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:4 }}>
+            <span style={{ fontSize:'1.1em', fontWeight:700, color:sc.color, fontFamily:"'Cormorant Garamond',serif" }}>Score AURUM</span>
+            <span style={{ padding:'2px 8px', borderRadius:20, background:`${sc.color}18`, border:`1px solid ${sc.color}44`, color:sc.color, fontSize:'.68em', fontFamily:"'DM Mono',monospace", fontWeight:700 }}>{sc.grade}</span>
+          </div>
+          {/* Mini bar */}
+          <div style={{ height:5, background:C.border, borderRadius:3, overflow:'hidden' }}>
+            <div style={{ height:'100%', width:`${sc.total}%`, background:`linear-gradient(90deg,${sc.color}99,${sc.color})`, borderRadius:3, transition:'width .6s ease', boxShadow:`0 0 10px ${sc.color}55` }} />
+          </div>
+        </div>
+        <span style={{ color:C.faint, fontSize:'.7em' }}>{open?'▲':'▼'}</span>
+      </div>
+
+      {/* Breakdown */}
+      {open && (
+        <div style={{ marginTop:14, display:'flex', flexDirection:'column', gap:7 }}>
+          {sc.dims.map(d => {
+            const pct = d.score / d.max * 100;
+            const col = pct >= 75 ? C.green : pct >= 50 ? C.gold : C.red;
+            return (
+              <div key={d.label}>
+                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
+                  <span style={{ fontSize:'.68em', color:C.muted }}>{d.label}</span>
+                  <span style={{ fontSize:'.68em', color:col, fontFamily:"'DM Mono',monospace" }}>{d.score}/{d.max}</span>
+                </div>
+                <div style={{ height:4, background:C.border, borderRadius:2, overflow:'hidden' }}>
+                  <div style={{ height:'100%', width:`${pct}%`, background:col, borderRadius:2, transition:'width .4s ease' }} />
+                </div>
+              </div>
+            );
+          })}
+          <div style={{ fontSize:'.62em', color:C.faint, marginTop:4, lineHeight:1.5, fontStyle:'italic' }}>
+            {sc.total >= 70 ? '✓ Cartera bien gestionada. Sigue el plan.' : sc.total >= 50 ? '⚠ Hay margen de mejora. Consulta a AURUM.' : '⚡ Cartera desalineada. Actúa ahora.'}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Goals Tracker ───────────────────────────────────────────── */
+const GOALS_KEY = 'aurum-goal';
+interface Goal { target: number; label: string; startValue: number; startDate: string; }
+
+function GoalsCard({ totalVal }: { totalVal: number }) {
+  const [goal,     setGoal]     = useState<Goal|null>(() => { try { const v = localStorage.getItem(GOALS_KEY); return v ? JSON.parse(v) : null; } catch { return null; } });
+  const [editing,  setEditing]  = useState(false);
+  const [tInput,   setTInput]   = useState('');
+  const [lInput,   setLInput]   = useState('');
+
+  const save = (target: number, label: string) => {
+    const g: Goal = { target, label, startValue: totalVal, startDate: new Date().toISOString().slice(0,10) };
+    setGoal(g);
+    localStorage.setItem(GOALS_KEY, JSON.stringify(g));
+    setEditing(false);
+  };
+  const remove = () => { setGoal(null); localStorage.removeItem(GOALS_KEY); };
+
+  if (!goal && !editing) return (
+    <button onClick={() => setEditing(true)}
+      style={{ background:'transparent', border:`1px dashed ${C.border2}`, borderRadius:10, padding:'10px 14px', cursor:'pointer', fontSize:'.72em', color:C.faint, width:'100%', marginBottom:14, fontFamily:"'Sora',sans-serif", textAlign:'left' }}>
+      🎯 Añadir objetivo financiero…
+    </button>
+  );
+
+  if (editing) return (
+    <div style={{ background:C.surf2, border:`1px solid ${C.border}`, borderRadius:10, padding:'14px 16px', marginBottom:14 }}>
+      <div style={{ fontSize:'.68em', color:C.goldL, fontWeight:600, marginBottom:10 }}>🎯 Nuevo objetivo</div>
+      <div style={{ display:'flex', gap:8, marginBottom:8 }}>
+        <div style={{ flex:1 }}>
+          <div style={{ fontSize:'.6em', color:C.muted, marginBottom:3 }}>Capital objetivo (€)</div>
+          <input type="number" value={tInput} onChange={e=>setTInput(e.target.value)} placeholder="100000" style={{ ...inputBase, padding:'7px 10px', fontSize:'.82em' }} />
+        </div>
+        <div style={{ flex:1 }}>
+          <div style={{ fontSize:'.6em', color:C.muted, marginBottom:3 }}>Etiqueta</div>
+          <input type="text" value={lInput} onChange={e=>setLInput(e.target.value)} placeholder="Jubilación, casa..." style={{ ...inputBase, padding:'7px 10px', fontSize:'.82em' }} />
+        </div>
+      </div>
+      <div style={{ display:'flex', gap:8 }}>
+        <button onClick={() => { const t = parseFloat(tInput); if (t > 0) save(t, lInput || 'Objetivo'); }}
+          style={{ background:C.gold, border:'none', borderRadius:8, padding:'7px 16px', color:'#07070e', fontWeight:700, cursor:'pointer', fontSize:'.78em', fontFamily:"'Sora',sans-serif" }}>Guardar</button>
+        <button onClick={() => setEditing(false)}
+          style={{ background:'transparent', border:`1px solid ${C.border2}`, borderRadius:8, padding:'7px 12px', color:C.muted, cursor:'pointer', fontSize:'.78em', fontFamily:"'Sora',sans-serif" }}>Cancelar</button>
+      </div>
+    </div>
+  );
+
+  const pct     = Math.min(totalVal / goal!.target * 100, 100);
+  const missing = Math.max(goal!.target - totalVal, 0);
+  const gained  = totalVal - goal!.startValue;
+  const color   = pct >= 100 ? C.green : pct >= 60 ? C.gold : C.blue;
+
+  return (
+    <div style={{ background:C.surf2, border:`1px solid ${C.border}`, borderRadius:10, padding:'14px 16px', marginBottom:14 }}>
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:8 }}>
+        <div style={{ fontSize:'.72em', fontWeight:600, color:C.goldL }}>🎯 {goal!.label}</div>
+        <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+          <span style={{ fontSize:'.65em', color:color, fontFamily:"'DM Mono',monospace", fontWeight:700 }}>{pct.toFixed(1)}%</span>
+          <button onClick={() => setEditing(true)} style={{ background:'transparent', border:'none', color:C.faint, cursor:'pointer', fontSize:'.75em' }}>✎</button>
+          <button onClick={remove} style={{ background:'transparent', border:'none', color:C.faint, cursor:'pointer', fontSize:'.75em' }}>✕</button>
+        </div>
+      </div>
+      {/* Barra de progreso */}
+      <div style={{ height:6, background:C.border, borderRadius:3, marginBottom:10, overflow:'hidden' }}>
+        <div style={{ height:'100%', width:`${pct}%`, background:color, borderRadius:3, transition:'width .4s ease', boxShadow:`0 0 8px ${color}66` }} />
+      </div>
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:8 }}>
+        {[
+          { l:'Actual',   v:`${totalVal.toLocaleString('es-ES',{maximumFractionDigits:0})}€`,    c:C.text  },
+          { l:'Objetivo', v:`${goal!.target.toLocaleString('es-ES',{maximumFractionDigits:0})}€`, c:C.muted },
+          { l:pct>=100?'Conseguido':'Faltan', v:`${missing>0?missing.toLocaleString('es-ES',{maximumFractionDigits:0})+'€':'🎉'}`, c:pct>=100?C.green:C.red },
+        ].map(({l,v,c})=>(
+          <div key={l} style={{ textAlign:'center' }}>
+            <div style={{ fontSize:'.58em', color:C.faint, marginBottom:2 }}>{l}</div>
+            <div style={{ fontSize:'.78em', fontWeight:600, color:c, fontFamily:"'DM Mono',monospace" }}>{v}</div>
+          </div>
+        ))}
+      </div>
+      {gained !== 0 && (
+        <div style={{ marginTop:8, fontSize:'.65em', color: gained>=0?C.green:C.red, textAlign:'center' }}>
+          {gained>=0?'▲':'▼'} {Math.abs(gained).toLocaleString('es-ES',{maximumFractionDigits:0})}€ desde que creaste el objetivo ({goal!.startDate})
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PortfolioTab({ portfolio, setPortfolio, profile }:{ portfolio:Position[]; setPortfolio:(p:Position[])=>void; profile:string }) {
   const empty = { ticker:'', name:'', shares:'', avgPrice:'', currentPrice:'' };
   const [form, setForm]       = useState(empty);
   const [adding, setAdding]   = useState(false);
@@ -1228,6 +1551,10 @@ function PortfolioTab({ portfolio, setPortfolio }:{ portfolio:Position[]; setPor
         {statCard('P&L total', `${pnl>=0?'+':''}${fmtEur(pnl)}`, pnl>=0?C.green:C.red)}
         {statCard('Rendimiento', `${pnlPct>=0?'+':''}${pnlPct.toFixed(2)}%`, pnlPct>=0?C.green:C.red)}
       </div>
+      {/* Score AURUM */}
+      <AurumScoreCard portfolio={portfolio} profile={profile} />
+      {/* Goals tracker */}
+      <GoalsCard totalVal={totalVal} />
       {/* Feature 1: Tax Harvesting Card */}
       <TaxCard portfolio={portfolio} />
       <div style={{ display:'grid', gridTemplateColumns:portfolio.length?'1fr 220px':'1fr', gap:14, alignItems:'start' }}>
@@ -1388,28 +1715,7 @@ function PortfolioTab({ portfolio, setPortfolio }:{ portfolio:Position[]; setPor
               </>}
         </Card>
         {portfolio.length>0 && (
-          <Card style={{ padding:'16px' }}>
-            <div style={{ fontSize:'.62em', letterSpacing:'1.5px', color:C.muted, textTransform:'uppercase', marginBottom:12 }}>Distribución</div>
-            <ResponsiveContainer width="100%" height={170}>
-              <PieChart>
-                <Pie data={chartData} cx="50%" cy="50%" innerRadius={48} outerRadius={78} paddingAngle={2} dataKey="value">
-                  {chartData.map((_,i)=><Cell key={i} fill={PIE_PAL[i%PIE_PAL.length]} />)}
-                </Pie>
-                <Tooltip formatter={(v:any)=>[`${v.toLocaleString('es-ES')}€`]} contentStyle={{ background:C.surf3, border:`1px solid ${C.border}`, borderRadius:8, fontSize:'.76em', color:C.text }}/>
-              </PieChart>
-            </ResponsiveContainer>
-            <div style={{ display:'flex', flexDirection:'column', gap:5, marginTop:8 }}>
-              {chartData.map((d,i)=>(
-                <div key={i} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', fontSize:'.72em' }}>
-                  <div style={{ display:'flex', alignItems:'center', gap:7 }}>
-                    <div style={{ width:9, height:9, borderRadius:2, background:PIE_PAL[i%PIE_PAL.length], flexShrink:0 }}/>
-                    <span style={{ color:C.muted }}>{d.name}</span>
-                  </div>
-                  <span style={{ color:C.text, fontFamily:"'DM Mono',monospace" }}>{totalVal?(d.value/totalVal*100).toFixed(1):0}%</span>
-                </div>
-              ))}
-            </div>
-          </Card>
+          <PortfolioSidePanel portfolio={portfolio} totalVal={totalVal} chartData={chartData} />
         )}
       </div>
       {importing && (
@@ -1429,13 +1735,25 @@ function PortfolioTab({ portfolio, setPortfolio }:{ portfolio:Position[]; setPor
 /* ══════════════════════════════════════════════════════════════
    RESEARCH TAB
 ══════════════════════════════════════════════════════════════ */
-function ResearchTab() {
+function ResearchTab({ portfolio, profile }: { portfolio: Position[]; profile: string }) {
   const [asset,           setAsset]           = useState('');
   const [running,         setRunning]         = useState(false);
   const [steps,           setSteps]           = useState<{ label:string; status:string; provider?:string }[]>([]);
   const [curStep,         setCurStep]         = useState(-1);
   const [report,          setReport]          = useState<string|null>(null);
   const [briefingLoading, setBriefingLoading] = useState(false);
+
+  // ── Modo Debate ────────────────────────────────────────────────
+  const [debateAsset,   setDebateAsset]   = useState('');
+  const [debateRunning, setDebateRunning] = useState(false);
+  const [debateBull,    setDebateBull]    = useState<string|null>(null);
+  const [debateBear,    setDebateBear]    = useState<string|null>(null);
+  const [debateVeredicto, setDebateVeredicto] = useState<string|null>(null);
+  const [activeView,    setActiveView]    = useState<'research'|'debate'|'carta'>('research');
+
+  // ── Carta del Gestor ───────────────────────────────────────────
+  const [cartaRunning,  setCartaRunning]  = useState(false);
+  const [carta,         setCarta]         = useState<string|null>(null);
 
   const runBriefing = async () => {
     if (briefingLoading || running) return;
@@ -1482,6 +1800,72 @@ function ResearchTab() {
     setRunning(false); setCurStep(-1);
   };
 
+  // ── Modo Debate: Bull IA vs Bear IA ─────────────────────────────
+  const runDebate = async () => {
+    if (!debateAsset.trim() || debateRunning) return;
+    setDebateRunning(true); setDebateBull(null); setDebateBear(null); setDebateVeredicto(null);
+    setActiveView('debate');
+
+    const bullPrompt = `Eres el Toro: analista financiero ultraoptimista. Tienes que argumentar CON FUERZA y datos por qué invertir en "${debateAsset}" AHORA es una oportunidad excelente. Cita catalizadores concretos, valoración atractiva, momentum, ventajas competitivas, mercados addressables. 3-4 párrafos de análisis sólido. Sé persuasivo.`;
+    const bearPrompt = `Eres el Oso: analista financiero escéptico. Tienes que argumentar CON DATOS por qué "${debateAsset}" es una mala inversión o al menos tiene riesgos serios que el mercado ignora. Cita valoración excesiva, riesgos estructurales, competencia, deuda, ciclo, catalizadores negativos. 3-4 párrafos. Sé riguroso.`;
+
+    try {
+      const [bull, bear] = await Promise.all([
+        callAnthropic([{ role: 'user', content: bullPrompt }], 'Eres un experto analista financiero alcista. Responde en español.', 'claude-sonnet-4-6'),
+        callAnthropic([{ role: 'user', content: bearPrompt }], 'Eres un experto analista financiero bajista. Responde en español.', 'claude-sonnet-4-6'),
+      ]);
+      setDebateBull(bull);
+      setDebateBear(bear);
+
+      // Veredicto final
+      const verdPrompt = `Has leído dos análisis opuestos sobre "${debateAsset}":\n\n**TORO (alcista):**\n${bull}\n\n**OSO (bajista):**\n${bear}\n\nComo árbitro independiente, da un VEREDICTO FINAL equilibrado: resume los 2 mejores argumentos de cada lado, y concluye con una recomendación práctica para un inversor de perfil "${profile}". Máximo 3 párrafos.`;
+      const verd = await callAnthropic([{ role: 'user', content: verdPrompt }], 'Eres AURUM, árbitro financiero imparcial. Responde en español.', 'claude-sonnet-4-6');
+      setDebateVeredicto(verd);
+    } catch(e:any) {
+      setDebateBull(`⚠️ Error: ${e.message}`);
+    }
+    setDebateRunning(false);
+  };
+
+  // ── Carta del Gestor (estilo Berkshire) ─────────────────────────
+  const runCarta = async () => {
+    if (cartaRunning) return;
+    setCartaRunning(true); setCarta(null);
+    setActiveView('carta');
+
+    const totalVal  = portfolio.reduce((a,p) => a + p.shares * p.currentPrice, 0);
+    const totalCost = portfolio.reduce((a,p) => a + p.shares * p.avgPrice, 0);
+    const pnl       = totalVal - totalCost;
+    const pnlPct    = totalCost ? (pnl / totalCost * 100) : 0;
+    const posLines  = portfolio.map(p => {
+      const val = p.shares * p.currentPrice;
+      const pct = totalVal ? (val / totalVal * 100) : 0;
+      const pp  = p.avgPrice ? ((p.currentPrice - p.avgPrice) / p.avgPrice * 100) : 0;
+      return `- ${p.ticker} (${p.name}): ${pct.toFixed(1)}% cartera, P&L ${pp>=0?'+':''}${pp.toFixed(1)}%`;
+    }).join('\n');
+
+    const prompt = `Eres el gestor de AURUM Capital. Escribe la **Carta Mensual al Inversor** de ${new Date().toLocaleDateString('es-ES',{month:'long',year:'numeric'})} estilo carta de Berkshire Hathaway — reflexiva, honesta, con visión a largo plazo. Sin tecnicismos innecesarios. Firma como "El Gestor".
+
+**Datos de la cartera:**
+- Perfil inversor: ${profile}
+- Valor total: ${totalVal.toLocaleString('es-ES',{maximumFractionDigits:0})}€
+- Resultado acumulado: ${pnl>=0?'+':''}${pnl.toLocaleString('es-ES',{maximumFractionDigits:0})}€ (${pnlPct>=0?'+':''}${pnlPct.toFixed(2)}%)
+- Posiciones:
+${posLines}
+
+Estructura la carta en: (1) Rendimiento del mes en contexto, (2) Reflexión sobre 1-2 posiciones clave, (3) Visión de mercado y qué vigilamos, (4) Un pensamiento final sobre inversión a largo plazo. Tono elegante, personal. 4-5 párrafos. En español.`;
+
+    try {
+      const result = await callAnthropic(
+        [{ role: 'user', content: prompt }],
+        'Eres el gestor de un fondo de inversión boutique. Escribes cartas mensuales a tus inversores con sabiduría, honestidad y visión a largo plazo.',
+        'claude-sonnet-4-6',
+      );
+      setCarta(result);
+    } catch(e:any) { setCarta(`⚠️ Error: ${(e as any).message}`); }
+    setCartaRunning(false);
+  };
+
   return (
     <div style={{ display:'flex', height:'100%', overflow:'hidden' }}>
       <div style={{ width:280, flexShrink:0, borderRight:`1px solid ${C.border}`, display:'flex', flexDirection:'column', padding:'20px 16px', gap:16, overflow:'auto', background:C.surf }}>
@@ -1493,17 +1877,39 @@ function ResearchTab() {
           <div style={{ fontSize:'.62em', letterSpacing:'2px', color:C.muted, textTransform:'uppercase', marginBottom:7 }}>Activo a investigar</div>
           <input value={asset} onChange={e=>setAsset(e.target.value)} onKeyDown={e=>e.key==='Enter'&&run()}
             placeholder="Ej: Apple, VWCE, Bitcoin, Inditex…" style={{ ...inputBase, marginBottom:8 }} />
-          <button onClick={run} disabled={running||!asset.trim()}
+          <button onClick={()=>{setActiveView('research');run();}} disabled={running||!asset.trim()}
             style={{ width:'100%', padding:'9px', background:asset.trim()&&!running?C.gold:'#1a1a28', border:'none', borderRadius:9, color:asset.trim()&&!running?'#07070e':C.muted, fontWeight:600, cursor:'pointer', fontSize:'.82em', fontFamily:"'Sora',sans-serif", transition:'all .18s', display:'flex', alignItems:'center', justifyContent:'center', gap:8 }}>
             {running?<><Spinner/>Investigando…</>:'🔬 Iniciar Research'}
           </button>
           <div style={{ borderTop:`1px solid ${C.border}`, paddingTop:14 }}>
             <div style={{ fontSize:'.62em', letterSpacing:'2px', color:C.muted, textTransform:'uppercase', marginBottom:7 }}>Mercados hoy</div>
-            <button onClick={runBriefing} disabled={briefingLoading || running}
+            <button onClick={()=>{runBriefing();setActiveView('research');}} disabled={briefingLoading || running}
               style={{ width:'100%', padding:'9px', background:briefingLoading?'#1a1a28':`${C.blue}18`, border:`1px solid ${briefingLoading?C.border:C.blue+'44'}`, borderRadius:9, color:briefingLoading?C.muted:C.blue, fontWeight:600, cursor:'pointer', fontSize:'.82em', fontFamily:"'Sora',sans-serif", transition:'all .18s', display:'flex', alignItems:'center', justifyContent:'center', gap:8 }}>
               {briefingLoading?<><Spinner/>Cargando…</>:'📊 Briefing diario'}
             </button>
           </div>
+        </div>
+
+        {/* ── Modo Debate ──────────────────────────────────────── */}
+        <div style={{ borderTop:`1px solid ${C.border}`, paddingTop:14 }}>
+          <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1em', fontWeight:600, color:'#e8734a', marginBottom:2 }}>⚔️ Modo Debate</div>
+          <div style={{ fontSize:'.68em', color:C.muted, lineHeight:1.45, marginBottom:9 }}>Toro IA vs Oso IA discuten un activo. Claude arbitra el veredicto.</div>
+          <input value={debateAsset} onChange={e=>setDebateAsset(e.target.value)} onKeyDown={e=>e.key==='Enter'&&runDebate()}
+            placeholder="Activo a debatir…" style={{ ...inputBase, marginBottom:8 }} />
+          <button onClick={runDebate} disabled={debateRunning||!debateAsset.trim()}
+            style={{ width:'100%', padding:'9px', background:debateAsset.trim()&&!debateRunning?'#e8734a':'#1a1a28', border:'none', borderRadius:9, color:debateAsset.trim()&&!debateRunning?'#fff':C.muted, fontWeight:600, cursor:'pointer', fontSize:'.82em', fontFamily:"'Sora',sans-serif", transition:'all .18s', display:'flex', alignItems:'center', justifyContent:'center', gap:8 }}>
+            {debateRunning?<><Spinner/>Debatiendo…</>:'⚔️ Iniciar Debate'}
+          </button>
+        </div>
+
+        {/* ── Carta del Gestor ─────────────────────────────────── */}
+        <div style={{ borderTop:`1px solid ${C.border}`, paddingTop:14 }}>
+          <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1em', fontWeight:600, color:C.purple, marginBottom:2 }}>📝 Carta del Gestor</div>
+          <div style={{ fontSize:'.68em', color:C.muted, lineHeight:1.45, marginBottom:9 }}>Carta mensual estilo Berkshire: reflexión sobre tu cartera, visión de mercado y sabiduría de largo plazo.</div>
+          <button onClick={runCarta} disabled={cartaRunning||portfolio.length===0}
+            style={{ width:'100%', padding:'9px', background:portfolio.length&&!cartaRunning?`${C.purple}22`:'#1a1a28', border:`1px solid ${portfolio.length&&!cartaRunning?C.purple+'55':C.border}`, borderRadius:9, color:portfolio.length&&!cartaRunning?C.purple:C.muted, fontWeight:600, cursor:'pointer', fontSize:'.82em', fontFamily:"'Sora',sans-serif", transition:'all .18s', display:'flex', alignItems:'center', justifyContent:'center', gap:8 }}>
+            {cartaRunning?<><Spinner/>Redactando…</>:portfolio.length===0?'📝 Añade posiciones primero':'📝 Generar Carta'}
+          </button>
         </div>
         {steps.length>0 && (
           <div>
@@ -1547,33 +1953,121 @@ function ResearchTab() {
       </div>
 
       <div style={{ flex:1, overflow:'auto', padding:'24px 28px' }}>
-        {!report&&!running && (
-          <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'100%', gap:14, color:C.muted, textAlign:'center' }}>
-            <div style={{ fontSize:'2.8em', opacity:.2 }}>🔬</div>
-            <div style={{ fontSize:'.92em' }}>Introduce un activo para comenzar</div>
-            <div style={{ fontSize:'.74em', opacity:.6, maxWidth:320, lineHeight:1.6 }}>AURUM Nexus lanza un pipeline de 5 búsquedas con GPT-4o, analiza riesgos con DeepSeek R1 y sintetiza el informe final con Claude.</div>
-          </div>
-        )}
-        {running&&!report && (
-          <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'100%', gap:14, color:C.muted }}>
-            <Dots /><div style={{ fontSize:'.88em' }}>Investigando <strong style={{ color:C.gold }}>{asset}</strong>…</div>
-          </div>
-        )}
-        {report && (
-          <div>
-            <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:22, paddingBottom:18, borderBottom:`1px solid ${C.border}` }}>
-              <div style={{ width:44, height:44, borderRadius:12, background:`linear-gradient(135deg,${C.goldD},${C.goldL})`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:18, fontWeight:800, color:'#07070e', flexShrink:0, fontFamily:"'Cormorant Garamond',serif" }}>A</div>
-              <div>
-                <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.22em', fontWeight:600, color:C.goldL }}>Informe de Inversión — {asset}</div>
-                <div style={{ fontSize:'.68em', color:C.muted, fontFamily:"'DM Mono',monospace", marginTop:2, display:'flex', gap:8, alignItems:'center' }}>
-                  {new Date().toLocaleDateString('es-ES',{weekday:'long',year:'numeric',month:'long',day:'numeric'})}
-                  <ProviderBadge provider="anthropic" model="claude-sonnet-4-6" />
+
+        {/* ── Vista: Research ───────────────────────────────── */}
+        {activeView==='research' && <>
+          {!report&&!running && (
+            <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'100%', gap:14, color:C.muted, textAlign:'center' }}>
+              <div style={{ fontSize:'2.8em', opacity:.2 }}>🔬</div>
+              <div style={{ fontSize:'.92em' }}>Introduce un activo para comenzar</div>
+              <div style={{ fontSize:'.74em', opacity:.6, maxWidth:320, lineHeight:1.6 }}>AURUM Nexus lanza un pipeline de 5 búsquedas con GPT-4o, analiza riesgos con DeepSeek R1 y sintetiza el informe final con Claude.</div>
+            </div>
+          )}
+          {running&&!report && (
+            <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'100%', gap:14, color:C.muted }}>
+              <Dots /><div style={{ fontSize:'.88em' }}>Investigando <strong style={{ color:C.gold }}>{asset}</strong>…</div>
+            </div>
+          )}
+          {report && (
+            <div>
+              <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:22, paddingBottom:18, borderBottom:`1px solid ${C.border}` }}>
+                <div style={{ width:44, height:44, borderRadius:12, background:`linear-gradient(135deg,${C.goldD},${C.goldL})`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:18, fontWeight:800, color:'#07070e', flexShrink:0, fontFamily:"'Cormorant Garamond',serif" }}>A</div>
+                <div>
+                  <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.22em', fontWeight:600, color:C.goldL }}>Informe de Inversión — {asset}</div>
+                  <div style={{ fontSize:'.68em', color:C.muted, fontFamily:"'DM Mono',monospace", marginTop:2, display:'flex', gap:8, alignItems:'center' }}>
+                    {new Date().toLocaleDateString('es-ES',{weekday:'long',year:'numeric',month:'long',day:'numeric'})}
+                    <ProviderBadge provider="anthropic" model="claude-sonnet-4-6" />
+                  </div>
                 </div>
               </div>
+              <div style={{ fontSize:'.88em', lineHeight:1.78, color:C.text }}><Md text={report} /></div>
             </div>
-            <div style={{ fontSize:'.88em', lineHeight:1.78, color:C.text }}><Md text={report} /></div>
+          )}
+        </>}
+
+        {/* ── Vista: Debate ─────────────────────────────────── */}
+        {activeView==='debate' && (
+          <div>
+            <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:22, paddingBottom:18, borderBottom:`1px solid ${C.border}` }}>
+              <div style={{ width:44, height:44, borderRadius:12, background:'linear-gradient(135deg,#e8734a,#f0a070)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:20, flexShrink:0 }}>⚔️</div>
+              <div>
+                <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.22em', fontWeight:600, color:'#e8734a' }}>Debate Toro vs Oso — {debateAsset || '…'}</div>
+                <div style={{ fontSize:'.68em', color:C.muted, marginTop:2 }}>Dos IAs con tesis opuestas · Claude arbitra el veredicto final</div>
+              </div>
+            </div>
+
+            {debateRunning && !debateBull && (
+              <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'60%', gap:14, color:C.muted }}>
+                <Dots /><div style={{ fontSize:'.88em' }}>Preparando argumentos…</div>
+              </div>
+            )}
+
+            {(debateBull || debateBear) && (
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16, marginBottom:20 }}>
+                {/* Bull */}
+                <div style={{ background:`${C.green}0c`, border:`1px solid ${C.green}33`, borderRadius:12, padding:'16px 18px' }}>
+                  <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:12 }}>
+                    <span style={{ fontSize:'1.3em' }}>🐂</span>
+                    <span style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.05em', fontWeight:600, color:C.green }}>Toro — Caso Alcista</span>
+                  </div>
+                  {debateBull
+                    ? <div style={{ fontSize:'.82em', lineHeight:1.75, color:C.text }}><Md text={debateBull} /></div>
+                    : <div style={{ display:'flex', gap:8, alignItems:'center', color:C.muted }}><Spinner/> Construyendo tesis…</div>
+                  }
+                </div>
+                {/* Bear */}
+                <div style={{ background:`${C.red}0c`, border:`1px solid ${C.red}33`, borderRadius:12, padding:'16px 18px' }}>
+                  <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:12 }}>
+                    <span style={{ fontSize:'1.3em' }}>🐻</span>
+                    <span style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.05em', fontWeight:600, color:C.red }}>Oso — Caso Bajista</span>
+                  </div>
+                  {debateBear
+                    ? <div style={{ fontSize:'.82em', lineHeight:1.75, color:C.text }}><Md text={debateBear} /></div>
+                    : <div style={{ display:'flex', gap:8, alignItems:'center', color:C.muted }}><Spinner/> Construyendo tesis…</div>
+                  }
+                </div>
+              </div>
+            )}
+
+            {/* Veredicto */}
+            {(debateVeredicto || (debateRunning && debateBull && debateBear && !debateVeredicto)) && (
+              <div style={{ background:`${C.gold}0a`, border:`1px solid ${C.gold}44`, borderRadius:12, padding:'16px 18px' }}>
+                <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:12 }}>
+                  <span style={{ fontSize:'1.3em' }}>⚖️</span>
+                  <span style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.1em', fontWeight:600, color:C.gold }}>Veredicto AURUM</span>
+                  {!debateVeredicto && <Spinner />}
+                </div>
+                {debateVeredicto && <div style={{ fontSize:'.84em', lineHeight:1.8, color:C.text }}><Md text={debateVeredicto} /></div>}
+              </div>
+            )}
           </div>
         )}
+
+        {/* ── Vista: Carta del Gestor ───────────────────────── */}
+        {activeView==='carta' && (
+          <div>
+            <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:22, paddingBottom:18, borderBottom:`1px solid ${C.border}` }}>
+              <div style={{ width:44, height:44, borderRadius:12, background:`linear-gradient(135deg,${C.purple}88,${C.purple})`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:20, flexShrink:0 }}>📝</div>
+              <div>
+                <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.22em', fontWeight:600, color:C.purple }}>Carta del Gestor — {new Date().toLocaleDateString('es-ES',{month:'long',year:'numeric'})}</div>
+                <div style={{ fontSize:'.68em', color:C.muted, marginTop:2 }}>Análisis mensual · estilo Berkshire Hathaway · redactada por AURUM</div>
+              </div>
+            </div>
+
+            {cartaRunning && !carta && (
+              <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'60%', gap:14, color:C.muted }}>
+                <Dots /><div style={{ fontSize:'.88em' }}>Redactando la carta…</div>
+              </div>
+            )}
+
+            {carta && (
+              <div style={{ background:`${C.purple}06`, border:`1px solid ${C.purple}22`, borderRadius:12, padding:'24px 28px', fontFamily:"'Cormorant Garamond',serif" }}>
+                <div style={{ fontSize:'.98em', lineHeight:2, color:C.text, fontStyle:'italic' }}><Md text={carta} /></div>
+              </div>
+            )}
+          </div>
+        )}
+
       </div>
     </div>
   );
@@ -3168,9 +3662,9 @@ export default function App() {
       {/* Contenido */}
       <div style={{ flex:1, overflow:'hidden', position:'relative', paddingBottom:'calc(58px + env(safe-area-inset-bottom, 0px))' }}>
         {tab==='chat'      && <ChatTab profile={profile} portfolio={portfolio} userProfile={userProfile} />}
-        {tab==='portfolio' && <PortfolioTab portfolio={portfolio} setPortfolio={setPortfolio} />}
+        {tab==='portfolio' && <PortfolioTab portfolio={portfolio} setPortfolio={setPortfolio} profile={profile} />}
         {tab==='invest'    && <InvestTab profile={profile} portfolio={portfolio} setPortfolio={setPortfolio} userProfile={userProfile} onNavigate={setTab} />}
-        {tab==='research'  && <ResearchTab />}
+        {tab==='research'  && <ResearchTab portfolio={portfolio} profile={profile} />}
         {tab==='control'   && <ControlTab />}
         {tab==='simulator' && <SimulatorTab />}
         {tab==='settings'  && <SettingsTab profile={profile} setProfile={handleSetProfile} userProfile={userProfile} setUserProfile={setUserProfile} />}
