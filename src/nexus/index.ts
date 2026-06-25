@@ -5,10 +5,14 @@ import { trimHistory, cacheGet, cacheSet } from './tokens';
 import { loadMemory, saveMemory, extractFacts } from './memory';
 import { selectContext } from './context';
 import {
+  buildAurumSystem, buildMacroSystem, buildRiesgoSystem, buildFiscalSystem,
+  buildContextPrefix,
   buildAurumPrompt, buildMacroPrompt, buildRiesgoPrompt,
   buildFiscalPrompt, buildResearchPrompt, buildSynthesisPrompt,
   buildMarketBriefingPrompt,
 } from './prompts';
+export { loadTokenBudget, updateTokenBudget, resetTokenBudget, estimateCost } from './tokens';
+export type { TokenBudget } from './tokens';
 
 export type { AgentKey, ChatMessage, DisplayMessage, Position, ResearchTask, UserMemory, UserProfile, Provider, RouteResult } from './types';
 export { PROVIDER_META, EMPTY_PROFILE } from './types';
@@ -91,8 +95,20 @@ export async function nexusChat(
     default:       system = buildAurumPrompt(profile, ctx); break;
   }
 
+  // Usar sistema ESTÁTICO (cacheable) + contexto dinámico en el mensaje user
+  // → el system prompt NUNCA cambia para el mismo agente → caché hits máximos
+  let staticSystem: string;
+  let ctxPrefix:    string = '';
+  switch (agentKey) {
+    case 'aurum':  staticSystem = buildAurumSystem(profile); ctxPrefix = buildContextPrefix(ctx); break;
+    case 'macro':  staticSystem = buildMacroSystem();  ctxPrefix = buildContextPrefix(ctx); break;
+    case 'riesgo': staticSystem = buildRiesgoSystem(); ctxPrefix = buildContextPrefix(ctx); break;
+    case 'fiscal': staticSystem = buildFiscalSystem(); ctxPrefix = buildContextPrefix(ctx); break;
+    default:       staticSystem = buildAurumSystem(profile); ctxPrefix = buildContextPrefix(ctx); break;
+  }
+
   const trimmed = trimHistory(messages);
-  const text    = await callProvider(route, trimmed, system, onSearch, ctx.maxTokens, ctx.useWebSearch);
+  const text    = await callProvider(route, trimmed, staticSystem, onSearch, ctx.maxTokens, ctx.useWebSearch, ctxPrefix);
 
   // Async memory extraction every 5 interactions
   _memory.interactions++;

@@ -22,7 +22,10 @@ import {
   // Intérprete de comandos + control de PC/navegador
   detectActionIntent, executeCommand, commandResultToMessage,
   runBrowserTask, runLocalAgentTask, getAgentStatus,
+  // Token tracking
+  loadTokenBudget, resetTokenBudget, estimateCost,
 } from './nexus/index';
+import type { TokenBudget } from './nexus/index';
 import type { ComputerTaskResult } from './nexus/index';
 import type {
   AgentKey, ChatMessage, DisplayMessage, InvestmentProposal, Position, RouteResult, UserProfile,
@@ -687,6 +690,7 @@ async function parsePortfolioWithAI(
     [{ role:'user', content }],
     IMPORT_SYSTEM,
     'claude-sonnet-4-6',
+    undefined, 512, false, // import: no web search, max 512 tokens
   );
   const json = raw.replace(/```[a-z]*\n?|```/g, '').trim();
   const parsed = JSON.parse(json) as any[];
@@ -1811,15 +1815,15 @@ function ResearchTab({ portfolio, profile }: { portfolio: Position[]; profile: s
 
     try {
       const [bull, bear] = await Promise.all([
-        callAnthropic([{ role: 'user', content: bullPrompt }], 'Eres un experto analista financiero alcista. Responde en español.', 'claude-sonnet-4-6'),
-        callAnthropic([{ role: 'user', content: bearPrompt }], 'Eres un experto analista financiero bajista. Responde en español.', 'claude-sonnet-4-6'),
+        callAnthropic([{ role: 'user', content: bullPrompt }], 'Eres un experto analista financiero alcista. Responde en español.', 'claude-sonnet-4-6', undefined, 1024, false),
+        callAnthropic([{ role: 'user', content: bearPrompt }], 'Eres un experto analista financiero bajista. Responde en español.', 'claude-sonnet-4-6', undefined, 1024, false),
       ]);
       setDebateBull(bull);
       setDebateBear(bear);
 
       // Veredicto final
       const verdPrompt = `Has leído dos análisis opuestos sobre "${debateAsset}":\n\n**TORO (alcista):**\n${bull}\n\n**OSO (bajista):**\n${bear}\n\nComo árbitro independiente, da un VEREDICTO FINAL equilibrado: resume los 2 mejores argumentos de cada lado, y concluye con una recomendación práctica para un inversor de perfil "${profile}". Máximo 3 párrafos.`;
-      const verd = await callAnthropic([{ role: 'user', content: verdPrompt }], 'Eres AURUM, árbitro financiero imparcial. Responde en español.', 'claude-sonnet-4-6');
+      const verd = await callAnthropic([{ role: 'user', content: verdPrompt }], 'Eres AURUM, árbitro financiero imparcial. Responde en español.', 'claude-sonnet-4-6', undefined, 768, false);
       setDebateVeredicto(verd);
     } catch(e:any) {
       setDebateBull(`⚠️ Error: ${e.message}`);
@@ -1860,6 +1864,7 @@ Estructura la carta en: (1) Rendimiento del mes en contexto, (2) Reflexión sobr
         [{ role: 'user', content: prompt }],
         'Eres el gestor de un fondo de inversión boutique. Escribes cartas mensuales a tus inversores con sabiduría, honestidad y visión a largo plazo.',
         'claude-sonnet-4-6',
+        undefined, 1536, false, // carta: sin web search (usa datos del portfolio ya en el prompt)
       );
       setCarta(result);
     } catch(e:any) { setCarta(`⚠️ Error: ${(e as any).message}`); }
@@ -3387,6 +3392,80 @@ function ControlTab() {
 }
 
 /* ══════════════════════════════════════════════════════════════
+   TOKEN USAGE CARD
+══════════════════════════════════════════════════════════════ */
+function TokenCard() {
+  const [budget, setBudget] = useState<TokenBudget>(() => loadTokenBudget());
+
+  const refresh = () => setBudget(loadTokenBudget());
+  const doReset = () => { resetTokenBudget(); setBudget(loadTokenBudget()); };
+
+  const cost   = estimateCost(budget);
+  const total  = budget.inputTokens + budget.outputTokens;
+  const cacheHitPct = budget.inputTokens > 0
+    ? Math.round(budget.cacheReadTokens / (budget.inputTokens + budget.cacheReadTokens + budget.cacheCreationTokens) * 100)
+    : 0;
+
+  // Días en el período
+  const days = Math.max(1, Math.round((Date.now() - budget.periodStart) / 86400_000));
+
+  const fmt = (n: number) => n >= 1000 ? `${(n/1000).toFixed(1)}k` : String(n);
+
+  return (
+    <div style={{ background:C.surf2, border:`1px solid ${C.border}`, borderRadius:13, padding:'16px 18px' }}>
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:14 }}>
+        <div>
+          <div style={{ fontSize:'.78em', fontWeight:600, color:C.goldL }}>Uso de Tokens</div>
+          <div style={{ fontSize:'.62em', color:C.faint, marginTop:2 }}>Últimos {days} día{days!==1?'s':''} · {budget.apiCalls} llamadas API</div>
+        </div>
+        <div style={{ display:'flex', gap:8 }}>
+          <button onClick={refresh} style={{ background:'transparent', border:`1px solid ${C.border2}`, color:C.muted, borderRadius:7, padding:'3px 10px', cursor:'pointer', fontSize:'.65em', fontFamily:"'Sora',sans-serif" }}>↺</button>
+          <button onClick={doReset} style={{ background:'transparent', border:`1px solid ${C.border2}`, color:C.muted, borderRadius:7, padding:'3px 10px', cursor:'pointer', fontSize:'.65em', fontFamily:"'Sora',sans-serif" }}>Reset</button>
+        </div>
+      </div>
+
+      {/* Stats grid */}
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:8, marginBottom:12 }}>
+        {[
+          { label:'Input',   val: fmt(budget.inputTokens),  color: C.blue,   sub: 'tokens' },
+          { label:'Output',  val: fmt(budget.outputTokens), color: C.green,  sub: 'tokens' },
+          { label:'Coste ~', val: `€${cost.toFixed(3)}`,    color: C.gold,   sub: 'estimado' },
+        ].map(({ label, val, color, sub }) => (
+          <div key={label} style={{ textAlign:'center', padding:'8px', background:C.surf3, borderRadius:8 }}>
+            <div style={{ fontSize:'.98em', fontWeight:700, color, fontFamily:"'DM Mono',monospace" }}>{val}</div>
+            <div style={{ fontSize:'.58em', color:C.muted }}>{label}</div>
+            <div style={{ fontSize:'.54em', color:C.faint }}>{sub}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Cache efficiency */}
+      <div style={{ marginBottom:10 }}>
+        <div style={{ display:'flex', justifyContent:'space-between', marginBottom:4 }}>
+          <span style={{ fontSize:'.68em', color:C.muted }}>Cache hit rate</span>
+          <span style={{ fontSize:'.68em', color: cacheHitPct >= 60 ? C.green : cacheHitPct >= 30 ? C.gold : C.red, fontFamily:"'DM Mono',monospace" }}>{cacheHitPct}%</span>
+        </div>
+        <div style={{ height:5, background:C.border, borderRadius:3, overflow:'hidden' }}>
+          <div style={{ height:'100%', width:`${cacheHitPct}%`, background: cacheHitPct>=60?C.green:cacheHitPct>=30?C.gold:C.red, borderRadius:3, transition:'width .4s' }} />
+        </div>
+        <div style={{ fontSize:'.6em', color:C.faint, marginTop:3 }}>
+          {fmt(budget.cacheReadTokens)} leídos de caché · {fmt(budget.cacheCreationTokens)} escritos · {budget.webSearchCalls} búsquedas web
+        </div>
+      </div>
+
+      {/* Tip */}
+      <div style={{ fontSize:'.62em', color:C.faint, lineHeight:1.5, fontStyle:'italic' }}>
+        {cacheHitPct >= 70
+          ? '✓ Excelente eficiencia. El system prompt se está cacheando correctamente.'
+          : cacheHitPct >= 40
+          ? '◑ Caché moderada. Cada conversación larga mejora la eficiencia.'
+          : '▲ Caché baja — normal en el primer uso. Mejora con el uso continuado.'}
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════
    VERSION CARD + OTA CHECKER
 ══════════════════════════════════════════════════════════════ */
 interface LatestJson {
@@ -3589,6 +3668,9 @@ function SettingsTab({ profile, setProfile, userProfile, setUserProfile }:{
 
         {/* Monitorización autónoma */}
         <AutonomousSection profile={profile} />
+
+        {/* Token usage */}
+        <TokenCard />
 
         {/* Versión + OTA checker */}
         <VersionCard />
