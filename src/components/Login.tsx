@@ -11,7 +11,8 @@
 
 import { useState } from 'react';
 import { C } from '../theme';
-import { ApiError } from '../store/api';
+import { ApiError, isNative } from '../store/api';
+import { startGoogleLogin } from '../store/native-auth';
 import {
   googleLoginUrl,
   login as doLogin,
@@ -269,22 +270,26 @@ export default function Login({
                 O BIEN
                 <div style={{ flex: 1, height: 1, background: C.border2 }} />
               </div>
-              <a
-                href={googleLoginUrl(mode === 'invite' ? invite : undefined)}
-                style={{
-                  display: 'block',
-                  textAlign: 'center',
-                  background: C.surf2,
-                  border: `1px solid ${C.border2}`,
-                  borderRadius: 9,
-                  padding: '11px 16px',
-                  fontSize: '.8em',
-                  color: C.text,
-                  textDecoration: 'none',
-                }}
-              >
-                Continuar con Google
-              </a>
+              {isNative ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    // Google rechaza OAuth dentro del webview de la app, así
+                    // que se abre el navegador del sistema y se vuelve por
+                    // aurum://auth.
+                    void startGoogleLogin(mode === 'invite' ? invite : undefined).catch(() =>
+                      setError('No se ha podido abrir el navegador para acceder con Google.'),
+                    );
+                  }}
+                  style={googleButtonStyle}
+                >
+                  Continuar con Google
+                </button>
+              ) : (
+                <a href={googleLoginUrl(mode === 'invite' ? invite : undefined)} style={googleButtonStyle}>
+                  Continuar con Google
+                </a>
+              )}
               {mode === 'invite' && (
                 <div style={{ fontSize: '.66em', color: C.muted, marginTop: 8, textAlign: 'center' }}>
                   Escribe el código antes de continuar con Google.
@@ -315,6 +320,21 @@ export default function Login({
     </div>
   );
 }
+
+const googleButtonStyle: React.CSSProperties = {
+  display: 'block',
+  width: '100%',
+  textAlign: 'center',
+  background: C.surf2,
+  border: `1px solid ${C.border2}`,
+  borderRadius: 9,
+  padding: '11px 16px',
+  fontSize: '.8em',
+  fontFamily: "'Sora',sans-serif",
+  color: C.text,
+  textDecoration: 'none',
+  cursor: 'pointer',
+};
 
 const linkStyle: React.CSSProperties = {
   background: 'none',

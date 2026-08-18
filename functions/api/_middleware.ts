@@ -27,13 +27,14 @@ const PUBLIC_PATHS = new Set([
   '/api/auth/register',
   '/api/auth/google/start',
   '/api/auth/google/callback',
+  '/api/auth/exchange',
 ]);
 
 /** Límite que aplica a cada ruta, y si el cubo va por usuario o por IP. */
 function limitsFor(path: string, method: string): string[] {
   if (path === '/api/auth/login') return ['auth:login'];
   if (path === '/api/auth/register') return ['auth:register'];
-  if (path.startsWith('/api/auth/google')) return ['auth:oauth'];
+  if (path.startsWith('/api/auth/google') || path === '/api/auth/exchange') return ['auth:oauth'];
   if (path === '/api/auth/invite') return ['invite:create'];
   if (path === '/api/anthropic') return ['ai:anthropic', 'ai:daily'];
   if (path === '/api/openai') return ['ai:openai', 'ai:daily'];

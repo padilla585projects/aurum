@@ -87,6 +87,8 @@ GOOGLE_CLIENT_ID       = ...                      # opcional, activa el acceso c
 GOOGLE_CLIENT_SECRET   = ...
 ```
 
+Para el acceso con Google (web y APK), sigue [docs/GOOGLE-OAUTH.md](docs/GOOGLE-OAUTH.md).
+
 > Las claves de IA las gestionan los proxies de `functions/api/` y nunca llegan al navegador. Desde la versión multiusuario, **ninguna ruta de `/api` responde sin sesión**: hay autenticación, CORS con allowlist y límite de peticiones por usuario.
 
 ### Desarrollo local con Functions

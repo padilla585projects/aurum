@@ -31,7 +31,7 @@ El propietario emite un token de backend por persona con `POST /admin/tokens`, y
 ### Edge (Cloudflare Pages)
 
 - `functions/api/_middleware.ts`: **ninguna ruta de /api responde sin pasar por aquí**. Valida sesión, cierra CORS a una allowlist (antes era `*`), bloquea CSRF por origen, aplica límites por usuario y registra en auditoría.
-- Auth por contraseña (`PBKDF2-SHA256`, 100.000 iteraciones) y Google OAuth (código + PKCE, `state` firmado en cookie httpOnly).
+- Auth por contraseña (`PBKDF2-SHA256`, 100.000 iteraciones) y Google OAuth (código + PKCE, `state` firmado en cookie httpOnly). En la APK el flujo sale al navegador del sistema y vuelve por `aurum://auth` con un código de un solo uso, que se canjea en `/api/auth/exchange`; el token nunca viaja en el deep link. Ver [GOOGLE-OAUTH.md](GOOGLE-OAUTH.md).
 - Los proxies de IA exigen sesión, validan el modelo contra una allowlist y topan `max_tokens`. El consumo se registra por usuario en `ai_usage`.
 - `/api/state`: estado por usuario en D1 con versión optimista y cuotas (256 KB por clave, 4 MB y 64 claves por usuario).
 

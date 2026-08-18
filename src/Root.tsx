@@ -15,6 +15,7 @@ import Login from './components/Login';
 import { C } from './theme';
 import { fetchAuthConfig, fetchMe, logout, type AuthConfig, type SessionUser } from './store/session';
 import { SessionContext } from './store/session-context';
+import { listenForDeepLink } from './store/native-auth';
 import * as store from './store/state';
 
 /** Motivos que puede devolver /api/auth/google/callback. */
@@ -84,6 +85,21 @@ export default function Root() {
     })();
     return () => { cancelled = true; };
   }, [enter, oauthError]);
+
+  // Retorno del acceso con Google en la APK. Se escucha siempre que no haya
+  // sesión: el usuario puede volver del navegador en cualquier momento.
+  useEffect(() => {
+    if (phase.kind === 'ready') return;
+    return listenForDeepLink({
+      onSession: user => void enter(user),
+      onError: reason =>
+        setPhase(current =>
+          current.kind === 'anon'
+            ? { ...current, error: OAUTH_ERRORS[reason] ?? 'No se ha podido completar el acceso con Google.' }
+            : current,
+        ),
+    });
+  }, [phase.kind, enter]);
 
   // Sincronización oportunista: al volver a la pestaña y antes de cerrarla.
   useEffect(() => {

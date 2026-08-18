@@ -11,11 +11,13 @@
     "android": "npm run build && npx cap sync android && npx cap open android"
   },
   "dependencies": {
+    "@capacitor/android": "^7.2.0",
+    "@capacitor/app": "^7.1.2",
+    "@capacitor/browser": "^7.0.5",
+    "@capacitor/core": "^7.2.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "recharts": "^2.15.3",
-    "@capacitor/core": "^7.2.0",
-    "@capacitor/android": "^7.2.0"
+    "recharts": "^2.15.3"
   },
   "devDependencies": {
     "@capacitor/cli": "^7.2.0",

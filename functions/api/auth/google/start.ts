@@ -18,6 +18,8 @@ export interface OAuthState {
   nonce: string;
   verifier: string;
   invite: string | null;
+  /** true si el flujo lo inició la APK y hay que volver por el deep link. */
+  native: boolean;
 }
 
 export function redirectUri(env: { AURUM_PUBLIC_URL?: string }, request: Request): string {
@@ -34,10 +36,13 @@ export async function onRequestGet(context: PagesContext): Promise<Response> {
 
   const url = new URL(request.url);
   const invite = url.searchParams.get('invite')?.trim().toUpperCase() || null;
+  // La APK abre esta URL en el navegador del sistema (Google rechaza el flujo
+  // dentro de un webview embebido) y espera volver por aurum://auth.
+  const native = url.searchParams.get('client') === 'native';
 
   const nonce = randomToken(16);
   const verifier = pkceVerifier();
-  const state: OAuthState = { nonce, verifier, invite };
+  const state: OAuthState = { nonce, verifier, invite, native };
   const cookieValue = await signPayload(env.AURUM_SIGNING_SECRET, state, OAUTH_TTL_MS);
 
   const authorize = new URL('https://accounts.google.com/o/oauth2/v2/auth');
