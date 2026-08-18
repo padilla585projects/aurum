@@ -1,22 +1,20 @@
 import type { ChatMessage, UserMemory } from './types';
 import { callDeepSeek } from './providers';
+import * as store from '../store/state';
 
 const MEMORY_KEY = 'aurum-nexus-memory-v1';
 const EMPTY: UserMemory = { facts: [], interactions: 0, lastUpdated: 0 };
 
 export async function loadMemory(): Promise<UserMemory> {
-  try {
-    const raw = localStorage.getItem(MEMORY_KEY);
-    return raw ? (JSON.parse(raw) as UserMemory) : EMPTY;
-  } catch { return EMPTY; }
+  return store.get<UserMemory>(MEMORY_KEY, EMPTY);
 }
 
 export async function saveMemory(m: UserMemory): Promise<void> {
-  try { localStorage.setItem(MEMORY_KEY, JSON.stringify(m)); } catch {}
+  store.set(MEMORY_KEY, m);
 }
 
 export async function clearMemory(): Promise<void> {
-  try { localStorage.removeItem(MEMORY_KEY); } catch {}
+  store.remove(MEMORY_KEY);
 }
 
 // Uses DeepSeek-chat (cheapest) to extract key facts about the user from recent messages.

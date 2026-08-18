@@ -1,48 +1,55 @@
 /**
- * Cloudflare Worker proxy para Anthropic API.
+ * Proxy de la API de Anthropic.
  *
- * Crítico: reenvía anthropic-beta para que el prompt-caching funcione
- * en producción (ahorra ~90% en tokens del system prompt).
+ * Requiere sesión: el middleware de /api rechaza la petición antes de llegar
+ * aquí si no hay usuario. Reenvía `anthropic-beta` para que el prompt-caching
+ * siga funcionando en producción (ahorra ~90% de los tokens del system prompt).
+ *
+ * El cuerpo se vuelve a serializar tras validarlo. El orden de las claves se
+ * conserva, así que el prefijo cacheado sigue siendo idéntico.
  */
 
-export async function onRequestPost(context: any) {
-  const req = context.request;
+import type { PagesContext } from '../_lib/types.ts';
+import { fail } from '../_lib/http.ts';
+import { extractUsage, recordUsage, validateBody } from '../_lib/ai-proxy.ts';
 
-  // Reenviar headers relevantes del frontend (especialmente anthropic-beta)
-  const fwdHeaders: Record<string, string> = {
-    'Content-Type':      'application/json',
-    'x-api-key':         context.env.ANTHROPIC_API_KEY,
+export async function onRequestPost(context: PagesContext): Promise<Response> {
+  const { request, env, data } = context;
+  const user = data.user;
+  if (!user) return fail(401, 'unauthenticated', 'Necesitas iniciar sesión.');
+  const validated = await validateBody(request, 'anthropic');
+  if (validated instanceof Response) return validated;
+
+  if (!env.ANTHROPIC_API_KEY) return fail(503, 'provider_disabled', 'ANTHROPIC_API_KEY no está configurada.');
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'x-api-key': env.ANTHROPIC_API_KEY,
     'anthropic-version': '2023-06-01',
   };
-
-  // Copiar cabeceras beta (prompt caching, extended thinking, etc.)
-  const betaHeader = req.headers.get('anthropic-beta');
-  if (betaHeader) fwdHeaders['anthropic-beta'] = betaHeader;
-
-  const body = await req.text();   // raw text para no re-serializar
+  const beta = request.headers.get('anthropic-beta');
+  if (beta) headers['anthropic-beta'] = beta;
 
   const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method:  'POST',
-    headers: fwdHeaders,
-    body,
+    method: 'POST',
+    headers,
+    body: JSON.stringify(validated.body),
   });
 
-  const data = await res.text();
-  return new Response(data, {
+  const text = await res.text();
+  let payload: unknown = null;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    // Respuesta no-JSON del proveedor: se reenvía tal cual y se registra sin consumo.
+  }
+
+  context.waitUntil(
+    recordUsage(env, user, 'anthropic', validated.model, res.status, extractUsage('anthropic', payload)),
+  );
+
+  return new Response(text, {
     status: res.status,
-    headers: {
-      'Content-Type':                'application/json',
-      'Access-Control-Allow-Origin': '*',
-    },
-  });
-}
-
-export async function onRequestOptions() {
-  return new Response(null, {
-    headers: {
-      'Access-Control-Allow-Origin':  '*',
-      'Access-Control-Allow-Methods': 'POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, anthropic-beta, anthropic-version',
-    },
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
   });
 }

@@ -15,6 +15,7 @@ import { PROFILES, buildUserBlock } from './prompts';
 import { detectDrift, rebalancePlan } from './tools';
 import { saveRecommendation, loadAutonomousConfig } from './autonomous';
 import { buildLessonsBlock, runLearningCycle } from './selflearn';
+import * as store from '../store/state';
 
 // ── Tipos ──────────────────────────────────────────────────────────────────
 
@@ -74,27 +75,23 @@ const DEFAULT_CFG: AutoInvestConfig = {
 // ── Config ─────────────────────────────────────────────────────────────────
 
 export function loadAutoConfig(): AutoInvestConfig {
-  try {
-    const v = localStorage.getItem(AUTO_CFG_KEY);
-    return v ? { ...DEFAULT_CFG, ...JSON.parse(v) } : DEFAULT_CFG;
-  } catch { return DEFAULT_CFG; }
+  return { ...DEFAULT_CFG, ...store.get<Partial<AutoInvestConfig>>(AUTO_CFG_KEY, {}) };
 }
 
 export function saveAutoConfig(cfg: AutoInvestConfig): void {
-  try { localStorage.setItem(AUTO_CFG_KEY, JSON.stringify(cfg)); } catch {}
+  store.set(AUTO_CFG_KEY, cfg);
 }
 
 // ── Action Log ─────────────────────────────────────────────────────────────
 
 export function loadActionLog(): ActionLogEntry[] {
-  try { const v = localStorage.getItem(ACTION_LOG_KEY); return v ? JSON.parse(v) : []; }
-  catch { return []; }
+  return store.get<ActionLogEntry[]>(ACTION_LOG_KEY, []);
 }
 
 function addActionEntry(entry: Omit<ActionLogEntry, 'id'>): ActionLogEntry {
   const full: ActionLogEntry = { ...entry, id: `act-${Date.now()}` };
   const log = [...loadActionLog(), full].slice(-30);
-  try { localStorage.setItem(ACTION_LOG_KEY, JSON.stringify(log)); } catch {}
+  store.set(ACTION_LOG_KEY, log);
   return full;
 }
 

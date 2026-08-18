@@ -4,6 +4,7 @@ import { routeAgent, routeTask, classifyQuery } from './router';
 import { trimHistory, cacheGet, cacheSet } from './tokens';
 import { loadMemory, saveMemory, extractFacts } from './memory';
 import { selectContext } from './context';
+import * as store from '../store/state';
 import {
   buildAurumSystem, buildMacroSystem, buildRiesgoSystem, buildFiscalSystem,
   buildContextPrefix,
@@ -168,12 +169,9 @@ export async function nexusMarketBriefing(): Promise<string> {
 // Prioridad: 1) Backend /prices (Yahoo Finance, 0 tokens)  2) IA como fallback
 
 async function _getBackendCfg(): Promise<{ url: string; apiKey: string } | null> {
-  try {
-    const v = localStorage.getItem('aurum-backend-config');
-    if (!v) return null;
-    const cfg = JSON.parse(v);
-    return cfg?.url && cfg?.apiKey ? cfg : null;
-  } catch { return null; }
+  // Config del backend privado: se queda en el dispositivo, no se sincroniza.
+  const cfg = store.get<{ url?: string; apiKey?: string } | null>('aurum-backend-config', null);
+  return cfg?.url && cfg?.apiKey ? { url: cfg.url, apiKey: cfg.apiKey } : null;
 }
 
 export async function nexusPrices(tickers: string[]): Promise<{ ticker: string; price: number }[]> {

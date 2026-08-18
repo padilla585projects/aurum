@@ -9,6 +9,7 @@
 
 import type { Position } from './types';
 import { detectDrift, portfolioRiskScore } from './tools';
+import * as store from '../store/state';
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
 const ALERTS_KEY     = 'aurum-alerts-v2';
@@ -82,14 +83,11 @@ export interface PerformanceSummary {
 // ── Alert storage ─────────────────────────────────────────────────────────────
 
 export function loadAlerts(): AurumAlert[] {
-  try {
-    const v = localStorage.getItem(ALERTS_KEY);
-    return v ? JSON.parse(v) : [];
-  } catch { return []; }
+  return store.get<AurumAlert[]>(ALERTS_KEY, []);
 }
 
 export function saveAlerts(alerts: AurumAlert[]): void {
-  try { localStorage.setItem(ALERTS_KEY, JSON.stringify(alerts.slice(0, MAX_ALERTS))); } catch {}
+  store.set(ALERTS_KEY, alerts.slice(0, MAX_ALERTS));
 }
 
 export function addAlert(
@@ -111,7 +109,7 @@ export function markAlertRead(id: string): void {
 }
 
 export function clearAlerts(): void {
-  try { localStorage.removeItem(ALERTS_KEY); } catch {}
+  store.remove(ALERTS_KEY);
 }
 
 export function unreadCount(): number {
@@ -121,14 +119,11 @@ export function unreadCount(): number {
 // ── Recommendation tracking ───────────────────────────────────────────────────
 
 export function loadRecommendations(): RecommendationRecord[] {
-  try {
-    const v = localStorage.getItem(RECS_KEY);
-    return v ? JSON.parse(v) : [];
-  } catch { return []; }
+  return store.get<RecommendationRecord[]>(RECS_KEY, []);
 }
 
 function saveRecommendations(recs: RecommendationRecord[]): void {
-  try { localStorage.setItem(RECS_KEY, JSON.stringify(recs.slice(0, MAX_RECS))); } catch {}
+  store.set(RECS_KEY, recs.slice(0, MAX_RECS));
 }
 
 export function saveRecommendation(
@@ -162,14 +157,11 @@ const DEFAULT_MON_CFG: AutonomousConfig = {
 };
 
 export function loadAutonomousConfig(): AutonomousConfig {
-  try {
-    const v = localStorage.getItem(MON_CFG_KEY);
-    return v ? { ...DEFAULT_MON_CFG, ...JSON.parse(v) } : DEFAULT_MON_CFG;
-  } catch { return DEFAULT_MON_CFG; }
+  return { ...DEFAULT_MON_CFG, ...store.get<Partial<AutonomousConfig>>(MON_CFG_KEY, {}) };
 }
 
 export function saveAutonomousConfig(cfg: AutonomousConfig): void {
-  try { localStorage.setItem(MON_CFG_KEY, JSON.stringify(cfg)); } catch {}
+  store.set(MON_CFG_KEY, cfg);
 }
 
 // ── Portfolio monitoring ──────────────────────────────────────────────────────

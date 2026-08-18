@@ -10,10 +10,12 @@ Novedades v2:
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
 import re
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Optional
@@ -25,6 +27,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from tr_client import TRAuthError, TRClient, TROrderError
+
+import broker_sessions
+import db
+import endpoints_identity
+from security import (
+    ALL_SCOPES,
+    SCOPE_ADMIN,
+    SCOPE_EXECUTE,
+    SCOPE_READ,
+    Principal,
+    secrets_available,
+)
 
 load_dotenv()
 
@@ -45,6 +59,18 @@ ALLOWED_ORIGINS = [
     ).split(",") if origin.strip()
 ]
 MAX_TRADE_AMOUNT_EUR = 10_000.0
+
+# Correo del propietario. Es la identidad bajo la que corre el ciclo autónomo y
+# la sesión de broker que se crea con las credenciales del .env.
+OWNER_EMAIL = os.getenv("AURUM_OWNER_EMAIL", "owner@aurum.local").strip().lower()
+
+# Interruptor maestro de ejecución. Desactivado por defecto: mientras esté en
+# false, AURUM analiza y propone, pero ninguna orden llega al broker. Solo debe
+# activarse cuando el flujo de doble confirmación se haya probado a conciencia.
+TRADING_ENABLED = os.getenv("AURUM_TRADING_ENABLED", "false").strip().lower() == "true"
+
+# Límite diario acumulado por usuario, además del tope por orden.
+MAX_DAILY_EUR = float(os.getenv("AURUM_MAX_DAILY_EUR", "1000"))
 
 # ── Claude helper ────────────────────────────────────────────────────────────
 
@@ -113,11 +139,32 @@ async def telegram_notify(text: str) -> None:
 
 # ── Auth helper ──────────────────────────────────────────────────────────────
 
-def require_key(x_aurum_key: str = Header(default="")) -> None:
-    if not API_KEY:
-        raise HTTPException(500, "AURUM_API_KEY no configurada en el servidor")
-    if x_aurum_key != API_KEY:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "API key inválida")
+def require_key(x_aurum_key: str = Header(default="")) -> Principal:
+    """
+    Identifica al usuario a partir de su token personal.
+
+    Sustituye a la clave única compartida: ahora cada persona tiene su propio
+    token, con rol y ámbitos, revocable de forma independiente. La antigua
+    AURUM_API_KEY solo sirve ya para una cosa —emitir el primer token de
+    propietario— y deja de funcionar en cuanto existe alguno.
+    """
+    principal = db.authenticate(x_aurum_key)
+    if principal is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Token inválido o revocado")
+    return principal
+
+
+def require_scope(principal: Principal, scope: str) -> None:
+    if not principal.has(scope):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            f"Tu token no tiene el permiso '{scope}' necesario para esta operación",
+        )
+
+
+def _bootstrap_key_valid(key: str) -> bool:
+    """La clave heredada solo vale mientras no haya ningún token emitido."""
+    return bool(API_KEY) and key == API_KEY and db.count_tokens() == 0
 
 
 # ── Autonomous scheduler ─────────────────────────────────────────────────────
@@ -333,12 +380,19 @@ async def _execute_auto_cycle(trigger_reason: str = "ciclo programado") -> dict:
     if sum(trade.amount for trade in validated_trades) > budget:
         raise ValueError("Plan autónomo supera el presupuesto configurado")
 
-    # Ejecutar órdenes en TR
+    # Ejecutar órdenes en TR. El ciclo autónomo corre bajo la identidad del
+    # propietario y está sujeto al mismo interruptor maestro que la API.
+    _ensure_trading_enabled()
+    _check_daily_limit(OWNER_EMAIL, sum(t.amount for t in validated_trades))
+
     results = []
     for t in validated_trades:
         try:
             logger.info(f"[Auto] Ejecutando {t.amount:.0f}€ de {t.ticker}…")
             order = await tr.buy_cash_amount(t.isin, t.amount)
+            db.record_order(f"auto-{int(time.time()*1000)}-{t.isin}", f"auto-{int(time.time()*1000)}-{t.isin}",
+                            OWNER_EMAIL, "buy", t.isin, t.amount, "executed",
+                            ticker=t.ticker, broker_order_id=order.get("id", ""))
             results.append({"ticker": t.ticker, "amount": t.amount, "status": "ok", "id": order.get("id","")})
         except Exception as e:
             logger.error(f"[Auto] Error orden {t.ticker}: {e}")
@@ -420,6 +474,25 @@ async def lifespan(app: FastAPI):
     global _schedule_task
     logger.info("AURUM Backend v2 arrancando…")
 
+    db.connect()
+    # La sesión de broker que se crea con las credenciales del .env pertenece al
+    # propietario: se registra a su nombre para que la API y el ciclo autónomo
+    # vean exactamente la misma sesión.
+    broker_sessions.adopt(OWNER_EMAIL, tr)
+
+    if not secrets_available():
+        logger.warning(
+            "AURUM_SECRET_KEY no configurada: las credenciales de broker por "
+            "usuario están desactivadas hasta que se defina."
+        )
+    if not TRADING_ENABLED:
+        logger.warning("AURUM_TRADING_ENABLED=false: ninguna orden llegará al broker.")
+    if db.count_tokens() == 0:
+        logger.warning(
+            "No hay tokens emitidos. Crea el primero con POST /admin/tokens "
+            "usando AURUM_API_KEY; después esa clave dejará de servir."
+        )
+
     if TR_PHONE and TR_PIN:
         try:
             await tr.login_init(TR_PHONE, TR_PIN)
@@ -453,6 +526,7 @@ async def lifespan(app: FastAPI):
             pass
     from computer_agent import close_agent
     await close_agent()
+    await broker_sessions.disconnect_all()
     await tr.disconnect()
     logger.info("AURUM Backend apagado.")
     await telegram_notify("🔴 *AURUM Backend* apagado.")
@@ -466,6 +540,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 
 # ── Pydantic models ──────────────────────────────────────────────────────────
@@ -485,6 +560,11 @@ class TradeItem(BaseModel):
 
 class InvestRequest(BaseModel):
     trades: list[TradeItem]
+    # Identifica la intención del cliente. Si se repite la misma petición (por
+    # un reintento de red o un doble toque), la orden no se ejecuta dos veces.
+    idempotency_key: str = Field(default="", max_length=80)
+    # Token del primer paso de la doble confirmación (POST /orders/prepare).
+    confirmation_token: str = Field(default="", max_length=120)
 
 class AutoRunRequest(BaseModel):
     trades:   list[TradeItem]
@@ -510,6 +590,113 @@ class SellItem(BaseModel):
 class SellRequest(BaseModel):
     trades: list[SellItem]
     notify: bool = True
+    idempotency_key: str = Field(default="", max_length=80)
+    confirmation_token: str = Field(default="", max_length=120)
+
+
+class BrokerCredentialsRequest(BaseModel):
+    phone: str = Field(min_length=6, max_length=24)
+    pin:   str = Field(min_length=4, max_length=12)
+
+
+class BrokerOtpRequest(BaseModel):
+    otp: str = Field(min_length=3, max_length=10)
+
+
+class TokenRequest(BaseModel):
+    user_email: str = Field(min_length=3, max_length=254)
+    role:       str = Field(default="user")
+    scopes:     list[str] = Field(default_factory=lambda: [SCOPE_READ])
+    label:      str = Field(default="", max_length=80)
+    ttl_days:   Optional[int] = Field(default=None, ge=1, le=3650)
+
+
+class PrepareOrderRequest(BaseModel):
+    """Primer paso de la doble confirmación: congela el plan y devuelve token."""
+    side:   str = Field(pattern="^(buy|sell)$")
+    trades: list[dict]
+
+
+# ── Guardas de ejecución de órdenes ──────────────────────────────────────────
+
+def _ensure_trading_enabled() -> None:
+    """
+    Interruptor maestro. Mientras AURUM_TRADING_ENABLED sea false, ninguna orden
+    sale hacia el broker, se pida desde donde se pida.
+    """
+    if not TRADING_ENABLED:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "La ejecución de órdenes está desactivada en este backend "
+            "(AURUM_TRADING_ENABLED=false).",
+        )
+
+
+def _check_daily_limit(user_email: str, amount_eur: float) -> None:
+    """Tope acumulado en 24 h, además del tope por orden."""
+    already = db.executed_today_eur(user_email)
+    if already + amount_eur > MAX_DAILY_EUR:
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            f"Superarías el límite diario ({MAX_DAILY_EUR:.0f}€). "
+            f"Ejecutado en las últimas 24 h: {already:.2f}€.",
+        )
+
+
+def _require_confirmation(principal: Principal, token: str, expected: dict) -> None:
+    """
+    Segundo paso de la doble confirmación. El plan que se ejecuta tiene que ser
+    exactamente el que se preparó: si cambia el valor o el importe, se rechaza.
+    """
+    if not token:
+        raise HTTPException(
+            status.HTTP_428_PRECONDITION_REQUIRED,
+            "Falta el token de confirmación. Prepara la operación en POST /orders/prepare.",
+        )
+    plan = db.consume_confirmation(principal.user_email, token)
+    if plan is None:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Token de confirmación inválido, caducado o ya usado.")
+    if plan != expected:
+        db.audit("order_confirmation_mismatch", principal.user_email, {"expected": expected, "plan": plan})
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "La operación no coincide con la que se confirmó.",
+        )
+
+
+def _order_plan(side: str, trades: list) -> dict:
+    """Representación canónica del plan, para comparar preparación y ejecución."""
+    items = []
+    for t in trades:
+        data = t if isinstance(t, dict) else t.model_dump()
+        items.append({
+            "isin": data.get("isin", ""),
+            "amount": round(float(data.get("amount", 0) or 0), 2),
+            "shares": round(float(data.get("shares", 0) or 0), 6),
+        })
+    items.sort(key=lambda x: (x["isin"], x["amount"], x["shares"]))
+    return {"side": side, "items": items}
+
+
+def _idempotency_key(provided: str, plan: dict) -> str:
+    """Si el cliente no manda clave, se deriva del propio plan."""
+    if provided.strip():
+        return provided.strip()[:80]
+    return hashlib.sha256(json.dumps(plan, sort_keys=True).encode("utf-8")).hexdigest()[:32]
+
+
+# Rutas de identidad, credenciales de broker y doble confirmación.
+# Se registran desde un módulo aparte para no seguir engordando este fichero.
+endpoints_identity.register(
+    app,
+    require_key=require_key,
+    require_scope=require_scope,
+    bootstrap_key_valid=_bootstrap_key_valid,
+    order_plan=_order_plan,
+    owner_email=OWNER_EMAIL,
+    trading_enabled=TRADING_ENABLED,
+    max_daily_eur=MAX_DAILY_EUR,
+)
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
@@ -527,7 +714,8 @@ async def health():
 
 @app.post("/auth/init")
 async def auth_init(body: AuthInitRequest, x_aurum_key: str = Header(default="")):
-    require_key(x_aurum_key)
+    principal = require_key(x_aurum_key)
+    require_scope(principal, SCOPE_READ)
     try:
         process_id = await tr.login_init(body.phone, body.pin)
         return {"status": "otp_sent", "processId": process_id}
@@ -537,7 +725,8 @@ async def auth_init(body: AuthInitRequest, x_aurum_key: str = Header(default="")
 
 @app.post("/auth/verify")
 async def auth_verify(body: AuthVerifyRequest, x_aurum_key: str = Header(default="")):
-    require_key(x_aurum_key)
+    principal = require_key(x_aurum_key)
+    require_scope(principal, SCOPE_READ)
     try:
         await tr.login_verify(body.otp)
         await tr.connect()
@@ -549,40 +738,73 @@ async def auth_verify(body: AuthVerifyRequest, x_aurum_key: str = Header(default
 
 @app.get("/portfolio")
 async def get_portfolio(x_aurum_key: str = Header(default="")):
-    require_key(x_aurum_key)
-    if not tr.authenticated:
-        raise HTTPException(401, "No autenticado en Trade Republic")
+    """Cartera del broker del usuario que pregunta, no de una cuenta común."""
+    principal = require_key(x_aurum_key)
+    require_scope(principal, SCOPE_READ)
     try:
-        await tr.ensure_connected()
-        positions = await tr.get_portfolio()
-        cash      = await tr.get_cash()
+        session = await broker_sessions.require_authenticated(principal.user_email)
+        positions = await session.client.get_portfolio()
+        cash      = await session.client.get_cash()
         return {"positions": positions, "cash": cash}
+    except TRAuthError as e:
+        raise HTTPException(401, str(e))
     except Exception as e:
         raise HTTPException(500, str(e))
 
 
 @app.post("/invest")
 async def invest(body: InvestRequest, x_aurum_key: str = Header(default="")):
-    """Ejecuta órdenes de compra (con confirmación del usuario)."""
-    require_key(x_aurum_key)
-    if not tr.authenticated:
-        raise HTTPException(401, "No autenticado en Trade Republic")
+    """
+    Ejecuta órdenes de compra en el broker del usuario.
+
+    Cuatro controles antes de tocar el broker: interruptor maestro, doble
+    confirmación, idempotencia y límite diario acumulado.
+    """
+    principal = require_key(x_aurum_key)
+    require_scope(principal, SCOPE_EXECUTE)
+    _ensure_trading_enabled()
     if not body.trades:
         raise HTTPException(400, "Lista de trades vacía")
 
-    await tr.ensure_connected()
+    plan = _order_plan("buy", body.trades)
+    _require_confirmation(principal, body.confirmation_token, plan)
+
+    key = _idempotency_key(body.idempotency_key, plan)
+    previous = db.find_order(principal.user_email, key)
+    if previous:
+        # Reintento de una orden ya procesada: se devuelve el resultado guardado
+        # en lugar de comprar dos veces.
+        db.audit("order_idempotent_replay", principal.user_email, {"key": key})
+        return {"results": [previous], "total_executed": 1 if previous["status"] == "executed" else 0,
+                "total_trades": 1, "replayed": True}
+
+    total = sum(t.amount for t in body.trades)
+    _check_daily_limit(principal.user_email, total)
+
+    try:
+        session = await broker_sessions.require_authenticated(principal.user_email)
+    except TRAuthError as e:
+        # Sin sesión de broker no hay nada que ejecutar. La confirmación ya se
+        # consumió, así que habrá que volver a prepararla tras iniciar sesión.
+        raise HTTPException(401, str(e))
+
     results = []
-    for trade in body.trades:
+    for idx, trade in enumerate(body.trades):
+        order_id = f"{key}-{idx}"
         try:
-            logger.info(f"Ejecutando: {trade.amount}€ de {trade.ticker}")
-            order_data = await tr.buy_cash_amount(trade.isin, trade.amount)
+            logger.info("Ejecutando compra de %.2f€ en %s para %s", trade.amount, trade.ticker, principal.user_email)
+            order_data = await session.client.buy_cash_amount(trade.isin, trade.amount)
             results.append({
                 "ticker": trade.ticker, "isin": trade.isin, "amount": trade.amount,
                 "status": "executed",   "orderId": order_data.get("id", ""),
             })
-        except (TROrderError, Exception) as e:
+            db.record_order(order_id, key, principal.user_email, "buy", trade.isin, trade.amount,
+                            "executed", ticker=trade.ticker, broker_order_id=order_data.get("id", ""))
+        except Exception as e:
             logger.error(f"Error orden {trade.ticker}: {e}")
             results.append({"ticker": trade.ticker, "isin": trade.isin, "amount": trade.amount, "status": "error", "error": str(e)})
+            db.record_order(order_id, f"{key}-err-{idx}", principal.user_email, "buy", trade.isin, trade.amount,
+                            "error", ticker=trade.ticker, error=str(e)[:500])
 
     executed = sum(1 for r in results if r["status"] == "executed")
     total_eur = sum(t.amount for t in body.trades if any(r["ticker"] == t.ticker and r["status"] == "executed" for r in results))
@@ -601,7 +823,8 @@ async def auto_run(body: AutoRunRequest, x_aurum_key: str = Header(default="")):
     Solo disponible si el usuario ha activado el modo autónomo.
     Requiere: tr autenticado + API key válida.
     """
-    require_key(x_aurum_key)
+    principal = require_key(x_aurum_key)
+    require_scope(principal, SCOPE_EXECUTE)
     if not tr.authenticated:
         raise HTTPException(401, "No autenticado en Trade Republic")
     if not _auto_cfg["enabled"]:
@@ -610,6 +833,9 @@ async def auto_run(body: AutoRunRequest, x_aurum_key: str = Header(default="")):
         return {"results": [], "message": "AURUM decidió no invertir en este ciclo."}
     if sum(trade.amount for trade in body.trades) > _auto_cfg["max_amount"]:
         raise HTTPException(400, "El total de órdenes supera el presupuesto autónomo configurado")
+
+    _ensure_trading_enabled()
+    _check_daily_limit(principal.user_email, sum(trade.amount for trade in body.trades))
 
     await tr.ensure_connected()
     results = []
@@ -650,34 +876,55 @@ async def sell(body: SellRequest, x_aurum_key: str = Header(default="")):
     Vende posiciones en Trade Republic.
     Especifica shares (unidades) o amount (€). Si ambos, se usa shares.
     """
-    require_key(x_aurum_key)
-    if not tr.authenticated:
-        raise HTTPException(401, "No autenticado en Trade Republic")
+    principal = require_key(x_aurum_key)
+    require_scope(principal, SCOPE_EXECUTE)
+    _ensure_trading_enabled()
     if not body.trades:
         raise HTTPException(400, "Lista de trades vacía")
 
-    await tr.ensure_connected()
+    plan = _order_plan("sell", body.trades)
+    _require_confirmation(principal, body.confirmation_token, plan)
+
+    key = _idempotency_key(body.idempotency_key, plan)
+    previous = db.find_order(principal.user_email, key)
+    if previous:
+        db.audit("order_idempotent_replay", principal.user_email, {"key": key})
+        return {"results": [previous], "total_executed": 1 if previous["status"] == "executed" else 0, "replayed": True}
+
+    try:
+        session = await broker_sessions.require_authenticated(principal.user_email)
+    except TRAuthError as e:
+        # Sin sesión de broker no hay nada que ejecutar. La confirmación ya se
+        # consumió, así que habrá que volver a prepararla tras iniciar sesión.
+        raise HTTPException(401, str(e))
+
     results = []
-    for trade in body.trades:
+    for idx, trade in enumerate(body.trades):
+        order_id = f"{key}-{idx}"
         try:
             if trade.shares > 0:
-                order_data = await tr.sell_shares(trade.isin, trade.shares)
+                order_data = await session.client.sell_shares(trade.isin, trade.shares)
                 desc = f"{trade.shares} acciones"
             elif trade.amount > 0:
-                order_data = await tr.sell_cash_amount(trade.isin, trade.amount)
+                order_data = await session.client.sell_cash_amount(trade.isin, trade.amount)
                 desc = f"{trade.amount:.0f}€"
             else:
                 raise ValueError("Especifica 'shares' o 'amount'")
 
-            logger.info(f"Venta {trade.ticker} ({desc}): {order_data}")
+            logger.info("Venta %s (%s) para %s", trade.ticker, desc, principal.user_email)
             results.append({
                 "ticker":  trade.ticker, "isin": trade.isin,
                 "status":  "executed",   "orderId": order_data.get("id", ""),
                 "desc":    desc,
             })
+            db.record_order(order_id, key, principal.user_email, "sell", trade.isin, trade.amount,
+                            "executed", ticker=trade.ticker, shares=trade.shares,
+                            broker_order_id=order_data.get("id", ""))
         except Exception as e:
             logger.error(f"Error venta {trade.ticker}: {e}")
             results.append({"ticker": trade.ticker, "isin": trade.isin, "status": "error", "error": str(e)})
+            db.record_order(order_id, f"{key}-err-{idx}", principal.user_email, "sell", trade.isin, trade.amount,
+                            "error", ticker=trade.ticker, shares=trade.shares, error=str(e)[:500])
 
     executed = sum(1 for r in results if r["status"] == "executed")
     if executed and body.notify:
@@ -690,7 +937,8 @@ async def sell(body: SellRequest, x_aurum_key: str = Header(default="")):
 @app.post("/schedule")
 async def configure_schedule(body: ScheduleConfig, x_aurum_key: str = Header(default="")):
     """Configura el modo autónomo del backend (desde el frontend)."""
-    require_key(x_aurum_key)
+    principal = require_key(x_aurum_key)
+    require_scope(principal, SCOPE_ADMIN)
     _auto_cfg.update({
         "enabled":        body.enabled,
         "interval_hours": body.interval_hours,
@@ -719,7 +967,8 @@ async def run_now(body: dict = {}, x_aurum_key: str = Header(default="")):
     Dispara inmediatamente un ciclo autónomo completo, sin esperar al intervalo.
     Útil para: oportunidades puntuales, primer setup, test.
     """
-    require_key(x_aurum_key)
+    principal = require_key(x_aurum_key)
+    require_scope(principal, SCOPE_EXECUTE)
     if not tr.authenticated:
         raise HTTPException(401, "No autenticado en Trade Republic")
 
@@ -743,7 +992,8 @@ async def run_now(body: dict = {}, x_aurum_key: str = Header(default="")):
 @app.get("/auto-log")
 async def get_auto_log(x_aurum_key: str = Header(default=""), limit: int = 20):
     """Devuelve el log de ejecuciones autónomas (para mostrar en el frontend)."""
-    require_key(x_aurum_key)
+    principal = require_key(x_aurum_key)
+    require_scope(principal, SCOPE_READ)
     log = list(reversed(_auto_cfg.get("action_log", [])))[:limit]
     return {
         "log":         log,
@@ -762,7 +1012,8 @@ async def get_auto_log(x_aurum_key: str = Header(default=""), limit: int = 20):
 @app.post("/notify")
 async def manual_notify(body: dict, x_aurum_key: str = Header(default="")):
     """Envía un mensaje personalizado al Telegram del usuario."""
-    require_key(x_aurum_key)
+    principal = require_key(x_aurum_key)
+    require_scope(principal, SCOPE_ADMIN)
     msg = body.get("message", "")
     if msg:
         await telegram_notify(msg)
@@ -822,7 +1073,8 @@ async def get_prices_endpoint(tickers: str, x_aurum_key: str = Header(default=""
     Usa Yahoo Finance (gratis, sin tokens de IA).
     ?tickers=VWCE,XEON,SPPW
     """
-    require_key(x_aurum_key)
+    principal = require_key(x_aurum_key)
+    require_scope(principal, SCOPE_READ)
     ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
     if not ticker_list:
         raise HTTPException(400, "Parámetro 'tickers' vacío")
@@ -936,7 +1188,8 @@ async def do_command(body: DoRequest, x_aurum_key: str = Header(default="")):
     Ejecuta cualquier orden en lenguaje natural.
     AURUM interpreta, decide y actúa.
     """
-    require_key(x_aurum_key)
+    principal = require_key(x_aurum_key)
+    require_scope(principal, SCOPE_ADMIN)
 
     context_str = ""
     if body.context:
@@ -967,7 +1220,9 @@ async def do_command(body: DoRequest, x_aurum_key: str = Header(default="")):
 
     # Ejecutar la acción detectada
     if action == "invest" and trades:
-        if not tr.authenticated:
+        if not TRADING_ENABLED:
+            result["message"] = "⚠️ La ejecución de órdenes está desactivada en este backend."
+        elif not tr.authenticated:
             result["message"] = "⚠️ No autenticado en Trade Republic."
         else:
             await tr.ensure_connected()
@@ -1045,7 +1300,8 @@ async def computer_task(body: ComputerRequest, x_aurum_key: str = Header(default
     No necesita intervención del usuario.
     Ejemplos: "extrae mi saldo de Revolut", "compra VWCE en Degiro", etc.
     """
-    require_key(x_aurum_key)
+    principal = require_key(x_aurum_key)
+    require_scope(principal, SCOPE_ADMIN)
     from computer_agent import get_agent
     agent = get_agent(headless=body.headless)
     try:
@@ -1087,7 +1343,8 @@ class AgentResultRequest(BaseModel):
 @app.post("/agent/register")
 async def agent_register(body: dict, x_aurum_key: str = Header(default="")):
     """El agente local se registra con sus capacidades."""
-    require_key(x_aurum_key)
+    principal = require_key(x_aurum_key)
+    require_scope(principal, SCOPE_ADMIN)
     global _agent_info
     _agent_info = {**body, "registered_at": datetime.now().isoformat(), "online": True}
     logger.info(f"[Agent] Local agent registrado: {body}")
@@ -1098,7 +1355,8 @@ async def agent_register(body: dict, x_aurum_key: str = Header(default="")):
 @app.get("/agent/status")
 async def agent_status(x_aurum_key: str = Header(default="")):
     """Estado del agente local."""
-    require_key(x_aurum_key)
+    principal = require_key(x_aurum_key)
+    require_scope(principal, SCOPE_ADMIN)
     return {
         "connected": bool(_agent_info),
         "info":      _agent_info,
@@ -1109,7 +1367,8 @@ async def agent_status(x_aurum_key: str = Header(default="")):
 @app.get("/agent/poll")
 async def agent_poll(x_aurum_key: str = Header(default="")):
     """El agente local llama a este endpoint para recibir comandos pendientes."""
-    require_key(x_aurum_key)
+    principal = require_key(x_aurum_key)
+    require_scope(principal, SCOPE_ADMIN)
     if not _agent_queue:
         return {"pending": False}
     cmd = _agent_queue.pop(0)
@@ -1119,7 +1378,8 @@ async def agent_poll(x_aurum_key: str = Header(default="")):
 @app.post("/agent/result")
 async def agent_result(body: AgentResultRequest, x_aurum_key: str = Header(default="")):
     """El agente local reporta el resultado de un comando ejecutado."""
-    require_key(x_aurum_key)
+    principal = require_key(x_aurum_key)
+    require_scope(principal, SCOPE_ADMIN)
     _agent_results[body.id] = body.result
     logger.info(f"[Agent] Resultado #{body.id}: {str(body.result)[:150]}")
     return {"status": "ok"}
@@ -1131,7 +1391,8 @@ async def agent_command(body: AgentCommandRequest, x_aurum_key: str = Header(def
     Envía un comando al agente local para ejecutar en el PC/móvil del usuario.
     Si wait_result=True, espera hasta timeout_sec segundos por el resultado.
     """
-    require_key(x_aurum_key)
+    principal = require_key(x_aurum_key)
+    require_scope(principal, SCOPE_ADMIN)
     if not _agent_info:
         raise HTTPException(503, "Agente local no conectado. Ejecuta local_agent.py en tu PC.")
     allowed_commands = {"screenshot", "open_app", "click", "move", "type", "hotkey", "open_url", "scroll"}
@@ -1163,7 +1424,8 @@ async def agent_do_nl(body: dict, x_aurum_key: str = Header(default="")):
     usando un loop Claude-visión con el agente local.
     Claude ve screenshots y decide qué comandos enviar al agente.
     """
-    require_key(x_aurum_key)
+    principal = require_key(x_aurum_key)
+    require_scope(principal, SCOPE_ADMIN)
     if not _agent_info:
         raise HTTPException(503, "Agente local no conectado. Ejecuta local_agent.py en tu PC.")
 

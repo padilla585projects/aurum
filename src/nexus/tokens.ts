@@ -1,4 +1,5 @@
 import type { ChatMessage } from './types';
+import * as store from '../store/state';
 
 // ── Estimación de tokens ───────────────────────────────────────────────────
 // ~3.8 chars/token para español
@@ -111,15 +112,12 @@ const EMPTY_BUDGET: TokenBudget = {
 };
 
 export function loadTokenBudget(): TokenBudget {
-  try {
-    const v = localStorage.getItem(BUDGET_KEY);
-    if (!v) return { ...EMPTY_BUDGET };
-    const b = JSON.parse(v) as TokenBudget;
-    // Reset mensual automático
-    const ageMs = Date.now() - (b.periodStart || 0);
-    if (ageMs > 30 * 24 * 3600_000) return { ...EMPTY_BUDGET, periodStart: Date.now() };
-    return b;
-  } catch { return { ...EMPTY_BUDGET }; }
+  const b = store.get<TokenBudget | null>(BUDGET_KEY, null);
+  if (!b) return { ...EMPTY_BUDGET, periodStart: Date.now() };
+  // Reset mensual automático
+  const ageMs = Date.now() - (b.periodStart || 0);
+  if (ageMs > 30 * 24 * 3600_000) return { ...EMPTY_BUDGET, periodStart: Date.now() };
+  return b;
 }
 
 export function updateTokenBudget(usage: {
@@ -136,12 +134,12 @@ export function updateTokenBudget(usage: {
     b.cacheReadTokens     += usage.cache_read_input_tokens     || 0;
     if (hadWebSearch) b.webSearchCalls++;
     b.apiCalls++;
-    localStorage.setItem(BUDGET_KEY, JSON.stringify(b));
+    store.set(BUDGET_KEY, b);
   } catch {}
 }
 
 export function resetTokenBudget(): void {
-  localStorage.setItem(BUDGET_KEY, JSON.stringify({ ...EMPTY_BUDGET, periodStart: Date.now() }));
+  store.set(BUDGET_KEY, { ...EMPTY_BUDGET, periodStart: Date.now() });
 }
 
 // Coste estimado en € (usando precios Claude Sonnet 4.6 europeos aproximados)

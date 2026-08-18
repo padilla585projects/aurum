@@ -32,6 +32,11 @@ import type {
   AurumAlert, AutonomousConfig, AutoInvestConfig, ActionLogEntry, Decision, Lesson,
 } from './nexus/index';
 import { callAnthropic } from './nexus/providers';
+import * as store from './store/state';
+import { C, PIE_PAL } from './theme';
+import { useSession } from './store/session-context';
+import { createInvite } from './store/session';
+import { ApiError } from './store/api';
 
 /* ══════════════════════════════════════════════════════════════
    BOOTSTRAP
@@ -75,14 +80,7 @@ const bootstrap = () => {
 /* ══════════════════════════════════════════════════════════════
    DESIGN TOKENS
 ══════════════════════════════════════════════════════════════ */
-const C = {
-  gold:'#c9a84c', goldL:'#e8c96a', goldD:'#a0732e',
-  bg:'#07070e', surf:'#0a0a14', surf2:'#0d0d1c', surf3:'#111120',
-  border:'#161626', border2:'#1e1e30',
-  text:'#d8d8f0', muted:'#404060', faint:'#252540',
-  green:'#2a9d6e', red:'#e05252', blue:'#5b9cf6', purple:'#9b6cf6',
-};
-const PIE_PAL = [C.gold, C.blue, C.green, C.purple, '#e8734a','#1abc9c','#e74c3c','#3498db'];
+// Paleta compartida con la pantalla de acceso (src/theme.ts).
 
 /* ══════════════════════════════════════════════════════════════
    VERSION
@@ -121,8 +119,11 @@ const RESEARCH_STEPS: { label:string; task:string; q:(a:string)=>string }[] = [
 /* ══════════════════════════════════════════════════════════════
    STORAGE
 ══════════════════════════════════════════════════════════════ */
-const sGet = async (k:string) => { try { const v=localStorage.getItem(k); return v?JSON.parse(v):null; } catch { return null; } };
-const sSet = async (k:string, v:unknown) => { try { localStorage.setItem(k,JSON.stringify(v)); } catch {} };
+// El estado del usuario vive en D1 (ver src/store/state.ts). Estas dos
+// funciones se mantienen async porque así las llama todo App.tsx, pero la
+// lectura es inmediata: el store tiene el estado en memoria desde el login.
+const sGet = async <T = any,>(k:string): Promise<T|null> => store.get<T|null>(k, null);
+const sSet = async (k:string, v:unknown): Promise<void> => { store.set(k, v); };
 
 /* ── Backend helpers ──────────────────────────────────────────── */
 interface BackendConfig { url: string; apiKey: string; }
@@ -1027,10 +1028,10 @@ interface PriceAlert { ticker: string; above?: number; below?: number; active: b
 const ALERTS_KEY = 'aurum-price-alerts';
 
 function loadPriceAlerts(): PriceAlert[] {
-  try { const v = localStorage.getItem(ALERTS_KEY); return v ? JSON.parse(v) : []; } catch { return []; }
+  return store.get<PriceAlert[]>(ALERTS_KEY, []);
 }
 function savePriceAlerts(alerts: PriceAlert[]) {
-  try { localStorage.setItem(ALERTS_KEY, JSON.stringify(alerts)); } catch {}
+  store.set(ALERTS_KEY, alerts);
 }
 
 /* ── PortfolioSidePanel — Distribución / Divisas / Dividendos ─ */
@@ -1252,7 +1253,7 @@ const GOALS_KEY = 'aurum-goal';
 interface Goal { target: number; label: string; startValue: number; startDate: string; }
 
 function GoalsCard({ totalVal }: { totalVal: number }) {
-  const [goal,     setGoal]     = useState<Goal|null>(() => { try { const v = localStorage.getItem(GOALS_KEY); return v ? JSON.parse(v) : null; } catch { return null; } });
+  const [goal,     setGoal]     = useState<Goal|null>(() => store.get<Goal|null>(GOALS_KEY, null));
   const [editing,  setEditing]  = useState(false);
   const [tInput,   setTInput]   = useState('');
   const [lInput,   setLInput]   = useState('');
@@ -1260,10 +1261,10 @@ function GoalsCard({ totalVal }: { totalVal: number }) {
   const save = (target: number, label: string) => {
     const g: Goal = { target, label, startValue: totalVal, startDate: new Date().toISOString().slice(0,10) };
     setGoal(g);
-    localStorage.setItem(GOALS_KEY, JSON.stringify(g));
+    store.set(GOALS_KEY, g);
     setEditing(false);
   };
-  const remove = () => { setGoal(null); localStorage.removeItem(GOALS_KEY); };
+  const remove = () => { setGoal(null); store.remove(GOALS_KEY); };
 
   if (!goal && !editing) return (
     <button onClick={() => setEditing(true)}
@@ -2394,7 +2395,7 @@ const WATCHLIST_KEY = 'aurum-watchlist';
 
 function WatchlistCard() {
   const [tickers, setTickers] = useState<string[]>(() => {
-    try { return JSON.parse(localStorage.getItem(WATCHLIST_KEY) || '[]'); } catch { return []; }
+    return store.get<string[]>(WATCHLIST_KEY, []);
   });
   const [prices,  setPrices]  = useState<Record<string, { price:number; changePct:number }>>({});
   const [input,   setInput]   = useState('');
@@ -2420,14 +2421,14 @@ function WatchlistCard() {
     if (!t || tickers.includes(t)) { setInput(''); return; }
     const next = [...tickers, t];
     setTickers(next);
-    localStorage.setItem(WATCHLIST_KEY, JSON.stringify(next));
+    store.set(WATCHLIST_KEY, next);
     setInput('');
   };
   const rem = (t: string) => {
     const next = tickers.filter(x => x !== t);
     setTickers(next);
     setPrices(prev => { const n = { ...prev }; delete n[t]; return n; });
-    localStorage.setItem(WATCHLIST_KEY, JSON.stringify(next));
+    store.set(WATCHLIST_KEY, next);
   };
 
   return (
@@ -3553,6 +3554,98 @@ function VersionCard() {
   );
 }
 
+
+/* ── Cuenta y sesión ──────────────────────────────────────────────────────── */
+
+/**
+ * Bloque de cuenta dentro de Ajustes: quién ha iniciado sesión, cierre de
+ * sesión y, si el usuario es el propietario, emisión de invitaciones.
+ *
+ * El código de invitación solo se muestra en el momento de crearlo: el servidor
+ * guarda únicamente su hash y no puede volver a enseñarlo.
+ */
+function AccountSection() {
+  const { user, offline, signOut } = useSession();
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [issued, setIssued]           = useState<{ code:string; email:string|null }|null>(null);
+  const [busy, setBusy]               = useState(false);
+  const [error, setError]             = useState<string|null>(null);
+
+  const issue = async () => {
+    setBusy(true); setError(null);
+    try {
+      const res = await createInvite(inviteEmail.trim() ? { email: inviteEmail.trim() } : {});
+      setIssued({ code: res.code, email: res.email });
+      setInviteEmail('');
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'No se ha podido crear la invitación.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div>
+      <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.18em', fontWeight:600, color:C.goldL, marginBottom:4 }}>Cuenta</div>
+      <div style={{ fontSize:'.74em', color:C.muted, marginBottom:14 }}>Tus datos se guardan en tu cuenta, no en este dispositivo.</div>
+
+      <div style={{ background:C.surf2, border:`1px solid ${C.border}`, borderRadius:13, padding:'14px 16px', display:'flex', flexDirection:'column', gap:12 }}>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:12, flexWrap:'wrap' }}>
+          <div>
+            <div style={{ fontSize:'.84em', color:C.text }}>{user.name || user.email}</div>
+            <div style={{ fontSize:'.7em', color:C.muted }}>
+              {user.email} · {user.role === 'owner' ? 'Propietario' : 'Usuario'}
+            </div>
+          </div>
+          <button onClick={() => void signOut()} style={{ background:C.surf3, border:`1px solid ${C.border2}`, borderRadius:9, padding:'8px 14px', color:C.text, fontSize:'.76em', fontFamily:"'Sora',sans-serif", cursor:'pointer' }}>
+            Cerrar sesión
+          </button>
+        </div>
+
+        {offline && (
+          <div style={{ background:`${C.blue}12`, border:`1px solid ${C.blue}33`, borderRadius:9, padding:'9px 11px', fontSize:'.72em', color:C.text }}>
+            Sin conexión con el servidor: estás viendo la copia local. Los cambios se enviarán al recuperar la conexión.
+          </div>
+        )}
+
+        {user.role === 'owner' && (
+          <div style={{ borderTop:`1px solid ${C.border}`, paddingTop:12 }}>
+            <div style={{ fontSize:'.76em', color:C.text, marginBottom:6 }}>Invitar a alguien</div>
+            <div style={{ fontSize:'.68em', color:C.muted, marginBottom:9, lineHeight:1.45 }}>
+              El registro está cerrado. Con un correo, la invitación solo sirve para esa persona.
+            </div>
+            <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+              <input
+                value={inviteEmail}
+                onChange={e => setInviteEmail(e.target.value)}
+                placeholder="correo@ejemplo.com (opcional)"
+                style={{ ...inputBase, flex:'1 1 200px', width:'auto' }}
+              />
+              <button onClick={() => void issue()} disabled={busy} style={{ background:busy?C.surf3:C.gold, color:busy?C.muted:C.bg, border:'none', borderRadius:9, padding:'8px 16px', fontSize:'.78em', fontWeight:600, fontFamily:"'Sora',sans-serif", cursor:busy?'default':'pointer' }}>
+                {busy ? 'Creando…' : 'Crear invitación'}
+              </button>
+            </div>
+
+            {error && <div style={{ marginTop:9, fontSize:'.72em', color:C.red }}>{error}</div>}
+
+            {issued && (
+              <div style={{ marginTop:11, background:C.surf3, border:`1px solid ${C.gold}44`, borderRadius:9, padding:'11px 13px' }}>
+                <div style={{ fontSize:'.68em', color:C.muted, marginBottom:5 }}>
+                  Cópialo ahora: no se puede volver a mostrar.
+                </div>
+                <div style={{ fontFamily:'monospace', fontSize:'.9em', color:C.goldL, letterSpacing:'.06em', wordBreak:'break-all' }}>
+                  {issued.code}
+                </div>
+                {issued.email && <div style={{ fontSize:'.68em', color:C.muted, marginTop:5 }}>Válida solo para {issued.email}</div>}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function SettingsTab({ profile, setProfile, userProfile, setUserProfile }:{
   profile: string;
   setProfile: (p:string)=>void;
@@ -3581,6 +3674,8 @@ function SettingsTab({ profile, setProfile, userProfile, setUserProfile }:{
   return (
     <div style={{ height:'100%', overflow:'auto', padding:'24px 28px' }}>
       <div style={{ maxWidth:700, margin:'0 auto', display:'flex', flexDirection:'column', gap:24 }}>
+
+        <AccountSection />
 
         {/* Perfil de riesgo */}
         <div>

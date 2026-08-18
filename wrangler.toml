@@ -1,3 +1,12 @@
 name = "aurum"
 compatibility_date = "2024-01-01"
 pages_build_output_dir = "dist"
+
+# Base de datos multiusuario (identidad, sesiones, límites, auditoría y estado).
+# Crear con:  npx wrangler d1 create aurum
+# y pegar aquí el database_id que devuelve el comando.
+[[d1_databases]]
+binding       = "DB"
+database_name = "aurum"
+database_id   = "PENDIENTE_PEGAR_ID_DE_D1"
+migrations_dir = "db/migrations"

@@ -4,13 +4,14 @@
  * Ciclo:
  *   1. Lee historial de recomendaciones con rendimiento real registrado.
  *   2. Usa DeepSeek-chat (más barato) para extraer lecciones concretas.
- *   3. Guarda lecciones en localStorage con nivel de confianza.
+ *   3. Guarda lecciones en el estado del usuario con nivel de confianza.
  *   4. Las lecciones se inyectan en el prompt del advisor.
  *   5. Con el tiempo, AURUM aprende qué funciona para este usuario/perfil/mercado.
  */
 
 import { callDeepSeek } from './providers';
 import { loadRecommendations } from './autonomous';
+import * as store from '../store/state';
 
 const LESSONS_KEY    = 'aurum-lessons-v1';
 const MAX_LESSONS    = 12;
@@ -24,12 +25,11 @@ export interface Lesson {
 }
 
 export function loadLessons(): Lesson[] {
-  try { const v = localStorage.getItem(LESSONS_KEY); return v ? JSON.parse(v) : []; }
-  catch { return []; }
+  return store.get<Lesson[]>(LESSONS_KEY, []);
 }
 
 function saveLessons(lessons: Lesson[]): void {
-  try { localStorage.setItem(LESSONS_KEY, JSON.stringify(lessons.slice(-MAX_LESSONS))); } catch {}
+  store.set(LESSONS_KEY, lessons.slice(-MAX_LESSONS));
 }
 
 function lastLearningAt(): number {
@@ -106,5 +106,5 @@ export async function runLearningCycle(): Promise<void> {
 
 /** Borra todas las lecciones (reset del aprendizaje). */
 export function clearLessons(): void {
-  try { localStorage.removeItem(LESSONS_KEY); } catch {}
+  store.remove(LESSONS_KEY);
 }

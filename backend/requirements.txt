@@ -5,5 +5,7 @@ python-dotenv==1.0.1
 httpx==0.27.2
 python-telegram-bot[webhooks]==21.3
 playwright==1.47.0
+# Cifrado en reposo de las credenciales de broker por usuario.
+cryptography==43.0.3
 # Para el local_agent (instalar en el PC del usuario, no en el servidor):
 #   pip install pyautogui mss pillow httpx pyperclip

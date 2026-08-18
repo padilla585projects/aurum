@@ -6,3 +6,8 @@ android/
 ios/
 *.local
 backend/__pycache__/
+.dev.vars
+.wrangler/
+backend/aurum.db
+backend/aurum.db-wal
+backend/aurum.db-shm
