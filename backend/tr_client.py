@@ -186,8 +186,33 @@ class TRClient:
                 "cashCurrency": "EUR",
             },
         })
-        logger.info(f"Orden {isin}: {data}")
+        logger.info(f"Orden compra {isin}: {data}")
         return data
+
+    async def sell_shares(self, isin: str, shares: float) -> dict:
+        """Vende una cantidad exacta de acciones/participaciones."""
+        logger.info(f"Vendiendo {shares} unidades de {isin}…")
+        data = await self._sub({
+            "type": "createOrder",
+            "order": {
+                "type":         "market",
+                "side":         "sell",
+                "instrumentId": f"{isin}.EU",
+                "size":         round(shares, 6),
+            },
+        })
+        logger.info(f"Orden venta {isin}: {data}")
+        return data
+
+    async def sell_cash_amount(self, isin: str, amount_eur: float) -> dict:
+        """Vende un importe en euros de un instrumento (requiere conocer el precio actual)."""
+        logger.info(f"Vendiendo {amount_eur}€ de {isin}…")
+        # Obtener precio actual para calcular número de acciones
+        price = await self.get_price(isin)
+        if not price:
+            raise TROrderError(f"No se pudo obtener precio de {isin}")
+        shares = round(amount_eur / price, 6)
+        return await self.sell_shares(isin, shares)
 
     # ── Lifecycle ───────────────────────────────────────────────────────────
 

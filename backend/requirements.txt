@@ -3,3 +3,7 @@ uvicorn[standard]==0.32.1
 websockets==13.1
 python-dotenv==1.0.1
 httpx==0.27.2
+python-telegram-bot[webhooks]==21.3
+playwright==1.47.0
+# Para el local_agent (instalar en el PC del usuario, no en el servidor):
+#   pip install pyautogui mss pillow httpx pyperclip

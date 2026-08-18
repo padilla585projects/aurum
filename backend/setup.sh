@@ -31,6 +31,9 @@ source venv/bin/activate
 echo "▶ Instalando dependencias Python..."
 pip install --quiet -r requirements.txt
 
+echo "▶ Instalando Playwright + navegador Chromium..."
+python -m playwright install chromium --with-deps 2>&1 | tail -5 || echo "⚠ Playwright install con advertencias (normal en LXC sin X11)"
+
 echo "▶ Configurando variables de entorno..."
 if [ ! -f .env ]; then
     cp .env.example .env
@@ -86,4 +89,8 @@ echo ""
 echo " 5. Anota tu IP de Tailscale:"
 echo "    tailscale ip -4"
 echo "    → Esa IP va en AURUM > Ajustes > Backend URL"
+echo ""
+echo " 6. (Opcional) Agente local en tu PC para control total:"
+echo "    pip install pyautogui mss pillow httpx"
+echo "    python local_agent.py --server http://\$(tailscale ip -4):8000 --key \$AURUM_API_KEY"
 echo ""

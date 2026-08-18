@@ -22,7 +22,7 @@ import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from tr_client import TRAuthError, TRClient, TROrderError
 
@@ -37,6 +37,14 @@ TR_PIN           = os.getenv("TR_PIN", "")
 TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 ANTHROPIC_KEY    = os.getenv("ANTHROPIC_API_KEY", "")
+
+ALLOWED_ORIGINS = [
+    origin.strip() for origin in os.getenv(
+        "AURUM_ALLOWED_ORIGINS",
+        "https://aurum-7cm.pages.dev,http://localhost:5173",
+    ).split(",") if origin.strip()
+]
+MAX_TRADE_AMOUNT_EUR = 10_000.0
 
 # ── Claude helper ────────────────────────────────────────────────────────────
 
@@ -316,16 +324,25 @@ async def _execute_auto_cycle(trigger_reason: str = "ciclo programado") -> dict:
     if not trades:
         return {"action": "hold", "reasoning": "Sin trades generados", "executed": 0}
 
+    # El plan de Claude no es una fuente de confianza: validarlo antes de
+    # enviarlo al broker y rechazar cualquier exceso de presupuesto.
+    try:
+        validated_trades = [TradeItem.model_validate(trade) for trade in trades]
+    except Exception as e:
+        raise ValueError(f"Plan autónomo inválido: {e}") from e
+    if sum(trade.amount for trade in validated_trades) > budget:
+        raise ValueError("Plan autónomo supera el presupuesto configurado")
+
     # Ejecutar órdenes en TR
     results = []
-    for t in trades:
+    for t in validated_trades:
         try:
-            logger.info(f"[Auto] Ejecutando {t['amount']:.0f}€ de {t['ticker']}…")
-            order = await tr.buy_cash_amount(t["isin"], t["amount"])
-            results.append({"ticker": t["ticker"], "amount": t["amount"], "status": "ok", "id": order.get("id","")})
+            logger.info(f"[Auto] Ejecutando {t.amount:.0f}€ de {t.ticker}…")
+            order = await tr.buy_cash_amount(t.isin, t.amount)
+            results.append({"ticker": t.ticker, "amount": t.amount, "status": "ok", "id": order.get("id","")})
         except Exception as e:
-            logger.error(f"[Auto] Error orden {t['ticker']}: {e}")
-            results.append({"ticker": t["ticker"], "amount": t["amount"], "status": "error", "error": str(e)})
+            logger.error(f"[Auto] Error orden {t.ticker}: {e}")
+            results.append({"ticker": t.ticker, "amount": t.amount, "status": "error", "error": str(e)})
 
     executed_list = [r for r in results if r["status"] == "ok"]
     total_exec    = sum(r["amount"] for r in executed_list)
@@ -445,7 +462,7 @@ app = FastAPI(title="AURUM Backend", version="2.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -461,10 +478,10 @@ class AuthVerifyRequest(BaseModel):
     otp: str
 
 class TradeItem(BaseModel):
-    ticker: str
-    isin:   str
-    amount: float
-    name:   str
+    ticker: str = Field(min_length=1, max_length=24)
+    isin:   str = Field(min_length=1, max_length=32)
+    amount: float = Field(gt=0, le=MAX_TRADE_AMOUNT_EUR)
+    name:   str = Field(min_length=1, max_length=160)
 
 class InvestRequest(BaseModel):
     trades: list[TradeItem]
@@ -476,18 +493,18 @@ class AutoRunRequest(BaseModel):
 
 class ScheduleConfig(BaseModel):
     enabled:        bool
-    interval_hours: int   = 168
-    max_amount:     float = 100.0
+    interval_hours: int   = Field(default=168, ge=24, le=24 * 31)
+    max_amount:     float = Field(default=100.0, ge=10, le=MAX_TRADE_AMOUNT_EUR)
     # Perfil e intenciones del inversor (opcionales)
     profile:        str   = "moderado"   # conservador | moderado | agresivo
     target_alloc:   str   = ""           # asignación objetivo libre
     user_goals:     str   = ""           # objetivos del inversor
 
 class SellItem(BaseModel):
-    ticker: str
-    isin:   str
-    shares: float = 0.0     # si se especifica, vende esas acciones exactas
-    amount: float = 0.0     # si se especifica, vende ese importe en €
+    ticker: str = Field(min_length=1, max_length=24)
+    isin:   str = Field(min_length=1, max_length=32)
+    shares: float = Field(default=0.0, ge=0, le=1_000_000)
+    amount: float = Field(default=0.0, ge=0, le=MAX_TRADE_AMOUNT_EUR)
     name:   str   = ""
 
 class SellRequest(BaseModel):
@@ -591,6 +608,8 @@ async def auto_run(body: AutoRunRequest, x_aurum_key: str = Header(default="")):
         raise HTTPException(403, "Modo autónomo no activado. Actívalo en Ajustes.")
     if not body.trades:
         return {"results": [], "message": "AURUM decidió no invertir en este ciclo."}
+    if sum(trade.amount for trade in body.trades) > _auto_cfg["max_amount"]:
+        raise HTTPException(400, "El total de órdenes supera el presupuesto autónomo configurado")
 
     await tr.ensure_connected()
     results = []
@@ -1013,11 +1032,11 @@ async def do_command(body: DoRequest, x_aurum_key: str = Header(default="")):
 # ── /computer — control autónomo de navegador vía Playwright + Claude vision ─
 
 class ComputerRequest(BaseModel):
-    task:        str
-    url:         str   = ""
-    credentials: dict  = {}   # {"username":"...","password":"..."} — opcional
+    task:        str = Field(min_length=1, max_length=2_000)
+    url:         str = Field(default="", max_length=2_000)
+    credentials: dict = Field(default_factory=dict)
     headless:    bool  = True
-    max_steps:   int   = 25
+    max_steps:   int   = Field(default=25, ge=1, le=25)
 
 @app.post("/computer")
 async def computer_task(body: ComputerRequest, x_aurum_key: str = Header(default="")):
@@ -1058,7 +1077,7 @@ _agent_info:    dict       = {}   # info del agente registrado
 class AgentCommandRequest(BaseModel):
     command: dict          # {type: "screenshot"|"click"|"type"|..., ...}
     wait_result: bool = True
-    timeout_sec: int  = 30
+    timeout_sec: int  = Field(default=30, ge=1, le=60)
 
 class AgentResultRequest(BaseModel):
     id:     str
@@ -1115,6 +1134,9 @@ async def agent_command(body: AgentCommandRequest, x_aurum_key: str = Header(def
     require_key(x_aurum_key)
     if not _agent_info:
         raise HTTPException(503, "Agente local no conectado. Ejecuta local_agent.py en tu PC.")
+    allowed_commands = {"screenshot", "open_app", "click", "move", "type", "hotkey", "open_url", "scroll"}
+    if body.command.get("type") not in allowed_commands:
+        raise HTTPException(400, "Tipo de comando no permitido")
 
     cmd_id = str(_uuid.uuid4())[:8]
     _agent_queue.append({"id": cmd_id, "command": body.command})

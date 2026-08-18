@@ -3691,8 +3691,9 @@ function BottomNav({ tab, setTab, alertCount, onAlertOpen }: {
     { id:'chat',      icon:'💬', label:'Chat',     shortcut:'Ctrl+1' },
     { id:'portfolio', icon:'📊', label:'Cartera',  shortcut:'Ctrl+2' },
     { id:'invest',    icon:'💰', label:'Invertir', shortcut:'Ctrl+3' },
-    { id:'control',   icon:'🖥️', label:'Control',  shortcut:'Ctrl+4' },
-    { id:'settings',  icon:'⚙️', label:'Ajustes',  shortcut:'Ctrl+5' },
+    { id:'research',  icon:'🔬', label:'Research', shortcut:'Ctrl+4' },
+    { id:'control',   icon:'🖥️', label:'Control',  shortcut:'Ctrl+5' },
+    { id:'settings',  icon:'⚙️', label:'Ajustes',  shortcut:'Ctrl+6' },
   ];
   return (
     <nav style={{
