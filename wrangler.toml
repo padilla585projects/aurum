@@ -3,10 +3,16 @@ compatibility_date = "2024-01-01"
 pages_build_output_dir = "dist"
 
 # Base de datos multiusuario (identidad, sesiones, límites, auditoría y estado).
-# Crear con:  npx wrangler d1 create aurum
-# y pegar aquí el database_id que devuelve el comando.
+# Creada con: npx wrangler d1 create aurum
 [[d1_databases]]
 binding       = "DB"
 database_name = "aurum"
-database_id   = "PENDIENTE_PEGAR_ID_DE_D1"
+database_id   = "8191b679-4da1-4b77-b7fc-7579fed958a9"
 migrations_dir = "db/migrations"
+
+# Variables no secretas. Los secretos (AURUM_SIGNING_SECRET,
+# AURUM_BOOTSTRAP_SECRET y las claves de IA) se definen con
+# `wrangler pages secret put` y nunca se escriben aquí.
+[vars]
+AURUM_ALLOWED_ORIGINS = "https://aurum-7cm.pages.dev"
+AURUM_PUBLIC_URL = "https://aurum-7cm.pages.dev"
