@@ -21,6 +21,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 import httpx
+from urllib.parse import quote
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -1041,28 +1042,47 @@ _YAHOO_MAP: dict[str, str] = {
     "^IXIC":   "^IXIC",    "^GDAXI":  "^GDAXI",
 }
 
+_YAHOO_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept": "application/json",
+}
+
+
+async def _yahoo_chart(client: httpx.AsyncClient, symbol: str) -> tuple[float | None, float | None]:
+    """Precio y cierre anterior de un símbolo, o (None, None) si no se puede.
+
+    Yahoo cerró `/v7/finance/quote`: responde 401 sin galleta ni crumb. El
+    `/v8/finance/chart` sigue abierto, pero va de uno en uno — de ahí que los
+    llamantes lancen las peticiones en paralelo en vez de pedir una lista.
+    """
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(symbol, safe='')}"
+    r = await client.get(url, params={"interval": "1d", "range": "5d"})
+    r.raise_for_status()
+    meta = (r.json().get("chart", {}).get("result") or [{}])[0].get("meta", {})
+    precio = meta.get("regularMarketPrice")
+    previo = meta.get("chartPreviousClose") or meta.get("previousClose")
+    return precio, previo
+
+
 async def _yahoo_prices(tickers: list[str]) -> dict[str, float]:
     """Obtiene precios de Yahoo Finance. Devuelve {ticker: price}."""
     yahoo_syms = [_YAHOO_MAP.get(t, t) for t in tickers]
-    sym_str    = ",".join(yahoo_syms)
-    url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={sym_str}&fields=regularMarketPrice"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "application/json",
-    }
-    result = {}
-    async with httpx.AsyncClient(timeout=8, headers=headers) as client:
-        r = await client.get(url)
-        r.raise_for_status()
-        data = r.json()
-    quotes = data.get("quoteResponse", {}).get("result", [])
-    for q in quotes:
-        sym   = q.get("symbol", "")
-        price = q.get("regularMarketPrice") or q.get("ask") or 0.0
-        # Revertir el mapeo para devolver el ticker AURUM original
-        orig = next((k for k, v in _YAHOO_MAP.items() if v == sym), sym)
-        if price:
-            result[orig] = round(price, 4)
+
+    async with httpx.AsyncClient(timeout=8, headers=_YAHOO_HEADERS) as client:
+        respuestas = await asyncio.gather(
+            *(_yahoo_chart(client, s) for s in yahoo_syms), return_exceptions=True
+        )
+
+    result: dict[str, float] = {}
+    for original, sym, resp in zip(tickers, yahoo_syms, respuestas):
+        # Un símbolo que falle no puede llevarse por delante a los demás: se
+        # omite y el llamante lo ve como precio ausente, no como error total.
+        if isinstance(resp, BaseException):
+            logger.warning(f"[Yahoo] {sym}: {resp}")
+            continue
+        precio, _ = resp
+        if precio:
+            result[original] = round(precio, 4)
     return result
 
 
@@ -1120,35 +1140,31 @@ async def get_market():
     Snapshot de índices en tiempo real (sin autenticación).
     Usado por el frontend y el Telegram bot.
     """
-    symbols_str = ",".join(s["symbol"] for s in _MARKET_SYMBOLS)
-    url = (
-        f"https://query1.finance.yahoo.com/v7/finance/quote"
-        f"?symbols={symbols_str}"
-        f"&fields=regularMarketPrice,regularMarketChangePercent"
-    )
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-    try:
-        async with httpx.AsyncClient(timeout=8, headers=headers) as c:
-            r = await c.get(url)
-            r.raise_for_status()
-            quotes = r.json().get("quoteResponse", {}).get("result", [])
+    async with httpx.AsyncClient(timeout=8, headers=_YAHOO_HEADERS) as c:
+        respuestas = await asyncio.gather(
+            *(_yahoo_chart(c, m["symbol"]) for m in _MARKET_SYMBOLS), return_exceptions=True
+        )
 
-        result = []
-        for m in _MARKET_SYMBOLS:
-            q = next((x for x in quotes if x.get("symbol") == m["symbol"]), None)
-            result.append({
-                "key":       m["key"],
-                "name":      m["name"],
-                "currency":  m["currency"],
-                "price":     q.get("regularMarketPrice") if q else None,
-                "changePct": q.get("regularMarketChangePercent") if q else None,
-            })
+    result = []
+    for m, resp in zip(_MARKET_SYMBOLS, respuestas):
+        precio = previo = None
+        if isinstance(resp, BaseException):
+            logger.warning(f"[Market] {m['symbol']}: {resp}")
+        else:
+            precio, previo = resp
+        result.append({
+            "key":       m["key"],
+            "name":      m["name"],
+            "currency":  m["currency"],
+            "price":     precio,
+            # La variación ya no viene dada: se calcula contra el cierre anterior.
+            "changePct": ((precio - previo) / previo * 100) if precio and previo else None,
+        })
 
-        return {"data": result, "ts": int(datetime.now().timestamp() * 1000)}
+    if all(q["price"] is None for q in result):
+        raise HTTPException(502, "No se pudieron obtener datos de mercado.")
 
-    except Exception as e:
-        logger.warning(f"[Market] Yahoo error: {e}")
-        raise HTTPException(502, f"No se pudieron obtener datos de mercado: {e}")
+    return {"data": result, "ts": int(datetime.now().timestamp() * 1000)}
 
 
 # ── /do — intérprete de órdenes en lenguaje natural ─────────────────────────
