@@ -58,18 +58,18 @@ describe('/api/market', () => {
     expect(urls.some(u => u.includes('/v7/finance/quote'))).toBe(false);
   });
 
-  it('un símbolo caído no tumba a los demás', async () => {
+  it('un símbolo sin ninguna fuente viva no tumba a los demás', async () => {
     const { token } = await seedLoggedIn();
-    let n = 0;
-    vi.stubGlobal('fetch', vi.fn(async () => {
-      n += 1;
-      return n === 1 ? new Response('', { status: 401 }) : chart(50, 50);
-    }));
+    // El IBEX cae en todas sus fuentes; los otros cinco responden.
+    vi.stubGlobal('fetch', vi.fn(async (u: unknown) =>
+      String(u).includes('%5EIBEX') ? new Response('', { status: 401 }) : chart(50, 50)));
 
     const { status, cuerpo } = await pedirMercado(token);
     expect(status).toBe(200);
-    expect(cuerpo.data![0].price).toBeNull();
-    expect(cuerpo.data!.slice(1).every(q => q.price === 50)).toBe(true);
+
+    const porClave = Object.fromEntries(cuerpo.data!.map(q => [q.key, q]));
+    expect(porClave.IBEX35.price).toBeNull();
+    expect(cuerpo.data!.filter(q => q.key !== 'IBEX35').every(q => q.price === 50)).toBe(true);
   });
 
   it('sin cierre anterior se devuelve el precio y la variación en blanco', async () => {
@@ -97,6 +97,51 @@ describe('/api/market', () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('sin salida'); }));
 
     expect((await pedirMercado(token)).status).toBe(502);
+  });
+
+  it('si la primera fuente cae, se usa la siguiente', async () => {
+    const { token } = await seedLoggedIn();
+    const visitadas: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (u: unknown) => {
+      const url = String(u);
+      visitadas.push(url);
+      // query1 caído, como pasó de verdad con el endpoint viejo.
+      if (url.includes('query1')) return new Response('', { status: 401 });
+      return chart(7, 7);
+    }));
+
+    const { status, cuerpo } = await pedirMercado(token);
+    expect(status).toBe(200);
+    expect(cuerpo.data!.every(q => q.price === 7)).toBe(true);
+    expect(visitadas.some(u => u.includes('query2'))).toBe(true);
+  });
+
+  it('con Yahoo entero caído quedan las fuentes de fuera para divisa y cripto', async () => {
+    const { token } = await seedLoggedIn();
+    vi.stubGlobal('fetch', vi.fn(async (u: unknown) => {
+      const url = String(u);
+      if (url.includes('finance.yahoo.com')) return new Response('', { status: 401 });
+      if (url.includes('frankfurter')) {
+        return new Response(JSON.stringify({ rates: { '2026-08-18': { USD: 1.10 }, '2026-08-19': { USD: 1.21 } } }),
+          { headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.includes('coingecko')) {
+        return new Response(JSON.stringify({ bitcoin: { eur: 60000, eur_24h_change: 2.5 } }),
+          { headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response('', { status: 404 });
+    }));
+
+    const { status, cuerpo } = await pedirMercado(token);
+    expect(status).toBe(200);
+
+    const porClave = Object.fromEntries(cuerpo.data!.map(q => [q.key, q]));
+    expect(porClave.EURUSD.price).toBe(1.21);
+    expect(porClave.EURUSD.changePct).toBeCloseTo(10, 5);
+    expect(porClave.BTCEUR).toMatchObject({ price: 60000, changePct: 2.5 });
+    // Los índices no tienen alternativa: se reconoce en vez de inventarla.
+    expect(porClave.SP500.price).toBeNull();
+    expect(porClave.GOLD.price).toBeNull();
   });
 
   it('si no llega ninguna cotización se dice, en vez de devolver seis huecos', async () => {
