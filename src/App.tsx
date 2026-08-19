@@ -1740,7 +1740,30 @@ function PortfolioTab({ portfolio, setPortfolio, profile }:{ portfolio:Position[
 /* ══════════════════════════════════════════════════════════════
    RESEARCH TAB
 ══════════════════════════════════════════════════════════════ */
+/**
+ * True cuando la pantalla es demasiado estrecha para dos columnas.
+ *
+ * La app usa estilos en linea, asi que no hay hoja de estilos donde poner una
+ * media query: se consulta matchMedia y se re-renderiza al cambiar.
+ */
+function useNarrowViewport(maxWidth = 720): boolean {
+  const [narrow, setNarrow] = useState(
+    () => typeof window !== 'undefined' && window.innerWidth <= maxWidth,
+  );
+  useEffect(() => {
+    const mq = window.matchMedia(`(max-width: ${maxWidth}px)`);
+    const onChange = () => setNarrow(mq.matches);
+    onChange();
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, [maxWidth]);
+  return narrow;
+}
+
 function ResearchTab({ portfolio, profile }: { portfolio: Position[]; profile: string }) {
+  // En movil las dos columnas no caben: 280px fijos dejaban al panel de la
+  // derecha unos 130px y el texto salia a una palabra por linea.
+  const narrow = useNarrowViewport();
   const [asset,           setAsset]           = useState('');
   const [running,         setRunning]         = useState(false);
   const [steps,           setSteps]           = useState<{ label:string; status:string; provider?:string }[]>([]);
@@ -1873,8 +1896,8 @@ Estructura la carta en: (1) Rendimiento del mes en contexto, (2) Reflexión sobr
   };
 
   return (
-    <div style={{ display:'flex', height:'100%', overflow:'hidden' }}>
-      <div style={{ width:280, flexShrink:0, borderRight:`1px solid ${C.border}`, display:'flex', flexDirection:'column', padding:'20px 16px', gap:16, overflow:'auto', background:C.surf }}>
+    <div style={{ display:'flex', flexDirection: narrow?'column':'row', height:'100%', overflow: narrow?'auto':'hidden' }}>
+      <div style={{ width: narrow?'100%':280, flexShrink:0, borderRight: narrow?'none':`1px solid ${C.border}`, borderBottom: narrow?`1px solid ${C.border}`:'none', display:'flex', flexDirection:'column', padding:'20px 16px', gap:16, overflow: narrow?'visible':'auto', background:C.surf }}>
         <div>
           <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.1em', fontWeight:600, color:C.goldL, marginBottom:3 }}>Research Profundo</div>
           <div style={{ fontSize:'.7em', color:C.muted, lineHeight:1.5 }}>Pipeline multi-modelo: GPT-4o Search para datos en vivo → DeepSeek para riesgos → Claude para síntesis</div>
@@ -1958,7 +1981,7 @@ Estructura la carta en: (1) Rendimiento del mes en contexto, (2) Reflexión sobr
         </div>
       </div>
 
-      <div style={{ flex:1, overflow:'auto', padding:'24px 28px' }}>
+      <div style={{ flex:1, overflow: narrow?'visible':'auto', padding:'24px 28px', minHeight: narrow?300:undefined }}>
 
         {/* ── Vista: Research ───────────────────────────────── */}
         {activeView==='research' && <>
