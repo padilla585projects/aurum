@@ -9,7 +9,7 @@
  *   · invite    — alta con código de invitación.
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { C } from '../theme';
 import { ApiError, isNative } from '../store/api';
 import { startGoogleLogin } from '../store/native-auth';
@@ -60,6 +60,14 @@ export default function Login({
   const [bootstrapSecret, setBootstrapSecret] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(initialError ?? null);
+
+  // El error puede llegar despues del primer montaje: es lo que ocurre con el
+  // retorno del deep link en la APK, que se resuelve con la pantalla ya en
+  // pie. Sin esto, useState se quedaria con el valor inicial y el fallo del
+  // acceso con Google no se le mostraria nunca al usuario.
+  useEffect(() => {
+    if (initialError) setError(initialError);
+  }, [initialError]);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
