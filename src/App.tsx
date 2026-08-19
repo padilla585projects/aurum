@@ -4026,9 +4026,6 @@ function BottomNav({ tab, setTab, alertCount, onAlertOpen }: {
    ROOT APP
 ══════════════════════════════════════════════════════════════ */
 export default function App() {
-  // La cabecera lista los proveedores disponibles, que ya son seis y no caben
-  // en un movil.
-  const narrow = useNarrowViewport();
   const [tab,          setTab]         = useState('chat');
   const [profile,      setProfile]     = useState('moderado');
   const [portfolio,    setPortfolio]   = useState<Position[]>([]);
@@ -4141,19 +4138,7 @@ export default function App() {
             </div>
           </div>
         </div>
-        {/* Rotulo de proveedores disponibles. Es decorativo, y con seis no cabe
-            en la cabecera de un movil: alli se oculta en lugar de desbordarse
-            sobre el nombre de la app. En pantalla ancha envuelve por si crece. */}
-        {!narrow && (
-          <div style={{ display:'flex', alignItems:'center', flexWrap:'wrap', justifyContent:'flex-end', gap:6, rowGap:2, minWidth:0 }}>
-            {Object.entries(PROVIDER_META).map(([k,v])=>(
-              <div key={k} style={{ display:'flex', alignItems:'center', gap:3, flexShrink:0 }}>
-                <div style={{ width:5, height:5, borderRadius:'50%', background:v.color, boxShadow:`0 0 5px ${v.color}` }}/>
-                <span style={{ fontSize:'.55em', color:v.color, fontFamily:"'DM Mono',monospace" }}>{v.short}</span>
-              </div>
-            ))}
-          </div>
-        )}
+
       </header>
 
       {/* Market Ticker — índices en vivo (visible si hay Cloudflare Worker) */}
