@@ -1564,8 +1564,10 @@ function PortfolioTab({ portfolio, setPortfolio, profile }:{ portfolio:Position[
       <TaxCard portfolio={portfolio} />
       <div style={{ display:'grid', gridTemplateColumns:portfolio.length?'1fr 220px':'1fr', gap:14, alignItems:'start' }}>
         <Card>
-          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'12px 16px', borderBottom:`1px solid ${C.border}` }}>
-            <span style={{ fontSize:'.65em', letterSpacing:'1.5px', color:C.muted, textTransform:'uppercase' }}>Posiciones · {portfolio.length}</span>
+          {/* La fila entera envuelve: antes solo lo hacia el grupo de botones, y
+              en movil la etiqueta quedaba apretada contra ellos. */}
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:8, padding:'12px 16px', borderBottom:`1px solid ${C.border}` }}>
+            <span style={{ fontSize:'.65em', letterSpacing:'1.5px', color:C.muted, textTransform:'uppercase', flexShrink:0 }}>Posiciones · {portfolio.length}</span>
             <div style={{ display:'flex', gap:6, flexWrap:'wrap', alignItems:'center' }}>
               {trSyncMsg && (
                 <span style={{ fontSize:'.65em', color:trSync==='ok'?C.green:trSync==='error'?C.red:C.muted }}>
