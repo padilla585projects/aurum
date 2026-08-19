@@ -47,8 +47,13 @@ if [ -f .env ]; then
 else
   clave_arranque=$("$py" -c 'import secrets; print(secrets.token_hex(32))')
   clave_cifrado=$("$py" -c 'import os,base64; print(base64.b64encode(os.urandom(32)).decode())')
-  printf '    Tu correo (el mismo con el que entras en AURUM): '
-  read -r correo
+  # Se admite como argumento para poder ejecutarlo sin intervencion.
+  correo="${1:-}"
+  if [ -z "$correo" ]; then
+    printf '    Tu correo (el mismo con el que entras en AURUM): '
+    read -r correo
+  fi
+  [ -n "$correo" ] || muere "Hace falta un correo. Pásalo como argumento: bash instalar.sh tu@correo.com" 
 
   cat > .env <<EOF
 # Generado por instalar.sh. No compartas este fichero: contiene tus claves.

@@ -7,6 +7,10 @@
 #  Uso:  powershell -ExecutionPolicy Bypass -File instalar.ps1
 # ═══════════════════════════════════════════════════════════════
 
+# El correo se puede pasar por parametro para poder ejecutarlo sin intervencion
+# (instalaciones desatendidas, pruebas). Si no se pasa, se pregunta.
+param([string]$Correo = '')
+
 $ErrorActionPreference = 'Stop'
 Set-Location -Path $PSScriptRoot
 
@@ -50,7 +54,9 @@ if (Test-Path ".env") {
 } else {
     $claveArranque = & $py -c "import secrets; print(secrets.token_hex(32))"
     $claveCifrado  = & $py -c "import os,base64; print(base64.b64encode(os.urandom(32)).decode())"
-    $correo        = Read-Host "    Tu correo (el mismo con el que entras en AURUM)"
+    $correo = $Correo
+    if (-not $correo) { $correo = Read-Host "    Tu correo (el mismo con el que entras en AURUM)" }
+    if (-not $correo) { Muere "Hace falta un correo. Pasalo con -Correo tu@correo.com" }
 
     @"
 # Generado por instalar.ps1. No compartas este fichero: contiene tus claves.

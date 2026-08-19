@@ -14,3 +14,5 @@ backend/aurum.db-shm
 __pycache__/
 .pytest_cache/
 coverage/
+backend/.venv/
+backend/aurum-backend.log
