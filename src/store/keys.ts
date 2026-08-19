@@ -28,10 +28,19 @@ export async function fetchProviderKeys(): Promise<ProviderKeyStatus[]> {
   return providers;
 }
 
+/**
+ * Guarda la clave, el modelo o ambos. Con una clave ya guardada se puede
+ * cambiar solo el modelo: la clave no es legible, asi que volver a pedirla
+ * obligaria a ir a buscarla a la consola del proveedor.
+ */
 export async function saveProviderKey(provider: string, key: string, model?: string): Promise<void> {
   await apiFetch('/api/keys', {
     method: 'PUT',
-    body: JSON.stringify({ provider, key, model: model?.trim() || undefined }),
+    body: JSON.stringify({
+      provider,
+      key: key.trim() || undefined,
+      model: model?.trim() || undefined,
+    }),
   });
 }
 

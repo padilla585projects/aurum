@@ -111,6 +111,31 @@ describe('/api/keys', () => {
     expect(providers.find(p => p.id === 'grok')!.hasOwnKey).toBe(false);
   });
 
+  it('permite cambiar solo el modelo sin volver a pegar la clave', async () => {
+    const { user, token } = await seedLoggedIn();
+    await dispatch('/api/keys', { method: 'PUT', bearer: token, body: { provider: 'grok', key: CLAVE } });
+
+    const soloModelo = await dispatch('/api/keys', {
+      method: 'PUT', bearer: token, body: { provider: 'grok', model: 'grok-4.6' },
+    });
+    expect(soloModelo.status).toBe(200);
+
+    // La clave sigue siendo la misma y ahora hay modelo.
+    const fila = await env.DB.prepare(
+      'SELECT hint, model FROM user_provider_keys WHERE user_id = ? AND provider = ?',
+    ).bind(user.id, 'grok').first<{ hint: string; model: string }>();
+    expect(fila!.hint).toBe('••••7890');
+    expect(fila!.model).toBe('grok-4.6');
+  });
+
+  it('sin clave guardada, mandar solo el modelo no crea nada', async () => {
+    const { token } = await seedLoggedIn();
+    const res = await dispatch('/api/keys', {
+      method: 'PUT', bearer: token, body: { provider: 'gemini', model: 'algo' },
+    });
+    expect(res.status).toBe(404);
+  });
+
   it('rechaza proveedores desconocidos y claves vacías', async () => {
     const { token } = await seedLoggedIn();
 

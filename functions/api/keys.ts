@@ -71,7 +71,6 @@ export async function onRequestPut(context: PagesContext): Promise<Response> {
   const provider = body.provider;
 
   const key = typeof body.key === 'string' ? body.key.trim() : '';
-  if (!key) return fail(400, 'bad_key', 'La clave no puede estar vacía.');
   if (key.length > MAX_KEY_LENGTH) return fail(400, 'bad_key', 'La clave es demasiado larga.');
 
   let model: string | null = null;
@@ -80,6 +79,27 @@ export async function onRequestPut(context: PagesContext): Promise<Response> {
   }
 
   const now = Date.now();
+
+  // Cambiar solo el modelo no deberia obligar a volver a pegar la clave: una vez
+  // guardada no se puede leer, asi que exigirla convertia un cambio trivial en
+  // ir a buscarla otra vez a la consola del proveedor.
+  if (!key) {
+    if (!model) return fail(400, 'bad_key', 'Indica la clave o el modelo que quieres guardar.');
+
+    const cambio = await env.DB.prepare(
+      `UPDATE user_provider_keys SET model = ?, updated_at = ? WHERE user_id = ? AND provider = ?`,
+    ).bind(model, now, user.id, provider).run();
+
+    if (!(cambio.meta.changes ?? 0)) {
+      return fail(404, 'no_key', 'Todavia no hay ninguna clave guardada para ese proveedor.');
+    }
+
+    await audit(env, {
+      userId: user.id, event: 'provider_model_set', route: '/api/keys',
+      status: 200, ip: clientIp(request), detail: { provider, model },
+    });
+    return json({ provider, model });
+  }
   await env.DB.prepare(
     `INSERT INTO user_provider_keys (user_id, provider, key_enc, hint, model, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)

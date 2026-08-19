@@ -3712,12 +3712,19 @@ function ProviderKeysSection() {
 
   const guardar = async (id:string) => {
     const { key, model } = campo(id);
-    if (!key.trim()) { setError('Escribe la clave antes de guardar.'); return; }
+    // Con la clave ya guardada basta con el modelo: no se puede releer, asi que
+    // pedirla otra vez para un cambio trivial seria ir a buscarla al proveedor.
+    if (!key.trim() && !model.trim()) { setError('Escribe la clave o el modelo antes de guardar.'); return; }
     setOcupado(id); setError(null); setAviso(null);
     try {
       await saveProviderKey(id, key.trim(), model);
+      // Aviso util: sin modelo, estos proveedores no llegan a usarse.
+      const p = providers.find(x => x.id === id);
+      const sinModelo = !model.trim() && !p?.model && !p?.restricted;
       setBorrador(b => ({ ...b, [id]: { key:'', model:'' } }));
-      setAviso('Clave guardada.');
+      setAviso(sinModelo
+        ? 'Guardado. Falta indicar el modelo: sin el, este proveedor no se usa.'
+        : 'Guardado.');
       recargar();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'No se ha podido guardar la clave.');
