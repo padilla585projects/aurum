@@ -30,6 +30,29 @@ El instalador comprueba Python, prepara un entorno aislado, instala lo necesario
 
 El token se muestra **una sola vez**. Si lo pierdes, borra `backend/aurum.db` y vuelve a ejecutar el instalador.
 
+### El token de la aplicación es de solo lectura
+
+El instalador emite en realidad **dos** tokens, y la diferencia importa:
+
+| Token | Qué permite | Dónde acaba |
+| --- | --- | --- |
+| **Solo lectura** | Ver tu cartera y sus precios, y enlazar Trade Republic | Es el que te muestra al final y el que pegas en la aplicación |
+| **Administración** | Además: mandar órdenes, programar tareas y manejar el agente que controla el PC | Se queda en `backend/.env`, como `AURUM_ADMIN_TOKEN`. No se pega en ningún sitio |
+
+La razón es que ese token **el navegador lo ve**. Tiene que verlo: es la propia página la que llama a tu backend, así que la clave viaja hasta ella y cualquiera con la consola abierta en tu sesión puede leerla. Si lo que puede hacer se limita a leer, lo que se pierde si se escapa se limita a leer.
+
+Que existan los dos también es lo que deja la puerta abierta: la clave de arranque (`AURUM_API_KEY`) solo funciona **mientras no hay ningún token**. Sin el de administración guardado no habría forma de emitir ninguno más.
+
+### Si de verdad quieres que la aplicación pueda operar
+
+Emite un token con más alcance usando el de administración, dentro de la carpeta `backend`:
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/admin/tokens -H "X-AURUM-KEY: $(grep '^AURUM_ADMIN_TOKEN=' .env | cut -d= -f2-)" -H 'Content-Type: application/json' -d '{"user_email":"TU@CORREO.COM","role":"owner","scopes":["read","execute","admin"],"label":"aplicacion-completa"}'
+```
+
+Pega el `token` que devuelva en Ajustes, en lugar del anterior. Piénsalo antes: a partir de ahí, ese token está en el navegador y puede mover dinero.
+
 ## 2. Conectarlo con la aplicación
 
 En AURUM: **Ajustes → Backend**. Pega la dirección y el token, y pulsa *Probar conexión*.
@@ -89,6 +112,7 @@ Aun así, es dinero real. Pruébalo primero con importes mínimos.
 | «No se ha podido conectar» y usas una dirección `http://` desde el móvil | Contenido mixto: necesitas https. Ver el apartado 2. |
 | «No se ha podido conectar» desde el mismo ordenador | El backend no está arrancado. Vuelve a ejecutar el instalador. |
 | «Token inválido o revocado» | El token no es el que corresponde a ese backend. Si lo perdiste, borra `backend/aurum.db` y reinstala. |
+| «Ese token no tiene permiso para esta operación» | Estás usando el de solo lectura en algo que escribe. Es lo esperado; ver el apartado 1. |
 | «No autenticado en Trade Republic» | Falta completar el paso 3, o la sesión ha caducado. Vuelve a introducir el código. |
 | El backend deja de responder al apagar el PC | Es lo normal: corre en tu máquina. Si lo quieres siempre disponible, instálalo en un equipo que esté siempre encendido. |
 
@@ -98,7 +122,7 @@ Todo vive en `backend/`, en tu máquina:
 
 | Fichero | Contiene |
 | --- | --- |
-| `.env` | Tus claves. No lo compartas ni lo subas a ningún sitio. |
+| `.env` | Tus claves, incluido el token de administración. No lo compartas ni lo subas a ningún sitio. |
 | `aurum.db` | Tokens de acceso, credenciales de broker cifradas, historial de órdenes y auditoría. |
 | `aurum-backend.log` | Registro de arranque, útil si algo falla. |
 

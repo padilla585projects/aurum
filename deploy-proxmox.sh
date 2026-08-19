@@ -245,11 +245,35 @@ fi
 
 # ── Token ──────────────────────────────────────────────────────────
 paso "Creando tu token de acceso"
-RESPUESTA=$(pct exec "$VMID" -- curl -s -X POST http://127.0.0.1:8000/admin/tokens \
-    -H "X-AURUM-KEY: ${CLAVE_ARRANQUE}" -H 'Content-Type: application/json' \
-    -d "{\"user_email\":\"${CORREO}\",\"role\":\"owner\",\"scopes\":[\"read\",\"execute\",\"admin\"]}" || true)
-TOKEN=$(printf '%s' "$RESPUESTA" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("token",""))' 2>/dev/null || true)
-[ -n "$TOKEN" ] && ok "Token creado" || aviso "No se ha podido crear el token: $RESPUESTA"
+# Se emiten dos tokens, y la diferencia importa:
+#
+#   · Uno de administracion, que puede emitir mas tokens y manejar los agentes.
+#     Se queda dentro del contenedor, en .env, y no se pega en ninguna parte.
+#   · Uno de solo lectura, que es el que va en la aplicacion. Con el se ve la
+#     cartera y nada mas: si alguna vez se filtra, el daño es leer.
+#
+# Sin el de administracion no habria forma de emitir mas: la clave de arranque
+# solo funciona mientras no existe ningun token.
+emitir() {
+    pct exec "$VMID" -- curl -s -X POST http://127.0.0.1:8000/admin/tokens \
+        -H "X-AURUM-KEY: $1" -H 'Content-Type: application/json' \
+        -d "$2" 2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin).get("token",""))' 2>/dev/null || true
+}
+
+ADMIN=$(emitir "${CLAVE_ARRANQUE}" "{\"user_email\":\"${CORREO}\",\"role\":\"owner\",\"scopes\":[\"read\",\"execute\",\"admin\"],\"label\":\"administracion\"}")
+
+if [ -n "$ADMIN" ]; then
+    pct exec "$VMID" -- sh -c 'grep -q "^AURUM_ADMIN_TOKEN=" "$1/.env" || {
+        echo ""
+        echo "# Token de administracion. Sirve para emitir mas tokens."
+        echo "AURUM_ADMIN_TOKEN=$2"
+    } >> "$1/.env"' _ "${DESTINO}" "$ADMIN"
+    TOKEN=$(emitir "$ADMIN" "{\"user_email\":\"${CORREO}\",\"role\":\"user\",\"scopes\":[\"read\"],\"label\":\"aplicacion\"}")
+    ok "Tokens creados"
+else
+    TOKEN=""
+    aviso "No se han podido crear los tokens. ¿Ya existía uno de antes?"
+fi
 
 # ── Resumen ────────────────────────────────────────────────────────
 echo ""
@@ -258,7 +282,7 @@ echo -e "${G}   Listo. Abre AURUM → Ajustes → Backend${N}"
 echo -e "${G}  ══════════════════════════════════════════════${N}"
 echo ""
 echo -e "   Dirección:  ${B}${DIRECCION}${N}"
-[ -n "$TOKEN" ] && echo -e "   Token:      ${B}${TOKEN}${N}"
+[ -n "$TOKEN" ] && echo -e "   Token:      ${B}${TOKEN}${N}   (solo lectura)"
 echo ""
 [ -n "$TOKEN" ] && echo -e "   ${Y}Copia el token ahora: no se puede volver a mostrar.${N}\n"
 if ! $CON_TAILSCALE; then

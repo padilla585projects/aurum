@@ -2890,9 +2890,15 @@ function BackendSection() {
       const quien = await backendCall({ url, apiKey }, '/me');
 
       setStatus('ok');
+      // Decir qué permite el token evita la confusión de descubrir más tarde,
+      // sin explicación, que una pantalla no responde. El de la aplicación es
+      // de solo lectura a propósito.
+      const soloLectura = Array.isArray(quien.scopes)
+        && quien.scopes.length === 1 && quien.scopes[0] === 'read';
+      const alcance = soloLectura ? ' Token de solo lectura.' : '';
       setStatusMsg(res.tr_authenticated
-        ? `✓ Conectado como ${quien.user_email}. Trade Republic ya está enlazado.`
-        : `✓ Conectado como ${quien.user_email}. Falta enlazar Trade Republic, aquí abajo.`);
+        ? `✓ Conectado como ${quien.user_email}. Trade Republic ya está enlazado.${alcance}`
+        : `✓ Conectado como ${quien.user_email}. Falta enlazar Trade Republic, aquí abajo.${alcance}`);
       await sSet('aurum-backend-config', { url, apiKey });
     } catch(e:any) {
       setStatus('error');

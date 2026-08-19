@@ -108,17 +108,35 @@ azul 6 "Creando tu token de acceso"
 clave_arranque=$(grep '^AURUM_API_KEY=' .env | cut -d= -f2-)
 correo=$(grep '^AURUM_OWNER_EMAIL=' .env | cut -d= -f2-)
 
-respuesta=$(curl -s -X POST http://127.0.0.1:8000/admin/tokens \
+# Se emiten dos tokens, y la diferencia importa:
+#
+#   · Uno de administracion, que puede emitir mas tokens y manejar los agentes.
+#     Se queda aqui, en .env, y no se pega en ninguna parte.
+#   · Uno de solo lectura, que es el que va en la aplicacion. Con el se puede
+#     ver la cartera y nada mas: si alguna vez se filtra, el daño es leer.
+#
+# Sin el de administracion no habria forma de emitir mas tokens: la clave de
+# arranque solo funciona mientras no existe ninguno.
+extraer() { printf '%s' "$1" | "$py" -c 'import sys,json;print(json.load(sys.stdin).get("token",""))' 2>/dev/null || true; }
+
+admin=$(extraer "$(curl -s -X POST http://127.0.0.1:8000/admin/tokens \
   -H "X-AURUM-KEY: $clave_arranque" -H "Content-Type: application/json" \
-  -d "{\"user_email\":\"$correo\",\"role\":\"owner\",\"scopes\":[\"read\",\"execute\",\"admin\"]}" || true)
+  -d "{\"user_email\":\"$correo\",\"role\":\"owner\",\"scopes\":[\"read\",\"execute\",\"admin\"],\"label\":\"administracion\"}" || true)")
 
-token=$(printf '%s' "$respuesta" | "$py" -c 'import sys,json;print(json.load(sys.stdin).get("token",""))' 2>/dev/null || true)
-
-if [ -n "$token" ]; then
-  bien "Token creado"
+if [ -n "$admin" ]; then
+  grep -q '^AURUM_ADMIN_TOKEN=' .env || {
+    echo '' >> .env
+    echo '# Token de administracion. Sirve para emitir mas tokens.' >> .env
+    echo "AURUM_ADMIN_TOKEN=$admin" >> .env
+  }
+  token=$(extraer "$(curl -s -X POST http://127.0.0.1:8000/admin/tokens \
+    -H "X-AURUM-KEY: $admin" -H "Content-Type: application/json" \
+    -d "{\"user_email\":\"$correo\",\"role\":\"user\",\"scopes\":[\"read\"],\"label\":\"aplicacion\"}" || true)")
+  bien "Tokens creados"
 else
-  aviso "No se ha creado: probablemente ya existía uno de antes."
-  aviso "Si lo has perdido, borra backend/aurum.db y vuelve a ejecutar esto."
+  token=""
+  aviso "No se han creado: probablemente ya existía uno de antes."
+  aviso "Si los has perdido, borra backend/aurum.db y vuelve a ejecutar esto."
 fi
 
 # ── Resultado ──────────────────────────────────────────────────
@@ -127,7 +145,7 @@ printf '   Listo. Abre AURUM y ve a Ajustes -> Backend\n'
 printf '  ================================================\n\n'
 printf '   Dirección:  http://localhost:8000\n'
 if [ -n "$token" ]; then
-  printf '   Token:      %s\n\n' "$token"
+  printf '   Token:      %s   (solo lectura)\n\n' "$token"
   printf '   Cópialo ahora: no se puede volver a mostrar.\n'
 fi
 printf '\n   Esa dirección funciona si usas AURUM en ESTE ordenador.\n'

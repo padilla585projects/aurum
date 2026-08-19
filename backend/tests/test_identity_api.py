@@ -186,3 +186,55 @@ class TestCredencialesDeBroker:
     def test_sin_token_no_se_llega(self, client):
         assert client.put("/broker/credentials", json=self.CREDENCIALES).status_code == 401
         assert client.get("/broker/credentials").status_code == 401
+
+
+class TestTokenDeSoloLectura:
+    """El contrato del token que los instaladores ponen en la aplicación.
+
+    Ese token acaba en el navegador —es la propia página quien llama al backend—
+    así que se emite con `read` y nada más. Estas pruebas fijan las dos mitades
+    del trato: que llega a todo lo que la aplicación necesita de verdad, y que no
+    llega a nada que mueva dinero ni toque el PC.
+    """
+
+    RUTAS_QUE_NECESITA = [
+        ("get",  "/me",         None),
+        ("get",  "/portfolio",  None),
+        ("get",  "/auto-log",   None),
+        ("post", "/auth/init",  {}),
+    ]
+
+    # Los cuerpos son válidos a propósito: con uno incompleto la respuesta sería
+    # un 422 de validación y la prueba pasaría sin llegar a mirar el ámbito.
+    _COMPRA = {"ticker": "AAPL", "isin": "US0378331005", "amount": 10.0, "name": "Apple"}
+
+    RUTAS_VEDADAS = [
+        ("post", "/invest",       {"trades": [_COMPRA]}),
+        ("post", "/sell",         {"trades": [{"ticker": "AAPL", "isin": "US0378331005", "amount": 10.0}]}),
+        ("post", "/run-now",      {}),
+        ("post", "/schedule",     {"enabled": True}),
+        ("post", "/do",           {"command": "ls"}),
+        ("get",  "/agent/status", None),
+    ]
+
+    def test_alcanza_lo_que_la_aplicacion_usa(self, client, usuario):
+        for metodo, ruta, cuerpo in self.RUTAS_QUE_NECESITA:
+            res = (client.get(ruta, headers=auth(usuario["token"])) if cuerpo is None
+                   else client.post(ruta, json=cuerpo, headers=auth(usuario["token"])))
+            # Puede fallar por otras razones (sin broker enlazado, cuerpo
+            # incompleto): lo que se afirma es que el ámbito no lo bloquea.
+            assert res.status_code != 403, f"{ruta} rechazada por ámbito"
+
+    def test_no_alcanza_nada_que_escriba(self, client, usuario):
+        for metodo, ruta, cuerpo in self.RUTAS_VEDADAS:
+            res = (client.get(ruta, headers=auth(usuario["token"])) if cuerpo is None
+                   else client.post(ruta, json=cuerpo, headers=auth(usuario["token"])))
+            assert res.status_code == 403, f"{ruta} debería exigir más ámbito"
+
+    def test_no_puede_emitirse_a_si_mismo_mas_permisos(self, client, usuario):
+        res = client.post(
+            "/admin/tokens",
+            json={"user_email": usuario["email"], "role": "owner", "scopes": [SCOPE_EXECUTE, SCOPE_ADMIN]},
+            headers=auth(usuario["token"]),
+        )
+        assert res.status_code == 403
