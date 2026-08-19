@@ -25,7 +25,8 @@ const OAUTH_ERRORS: Record<string, string> = {
   exchange_failed: 'Google no ha validado el acceso. Inténtalo otra vez.',
   no_claims: 'Google no ha devuelto un correo con el que identificarte.',
   email_unverified: 'Google no confirma que ese correo sea tuyo, así que no se puede vincular con una cuenta existente.',
-  invite_required: 'Necesitas una invitación para crear una cuenta.',
+  invite_required:
+    'Esa cuenta de Google no está vinculada a ningún usuario de AURUM. Comprueba que has elegido la cuenta correcta en el selector, o pide una invitación.',
   invite_invalid: 'La invitación no es válida o ya se ha usado.',
   invite_used: 'Esa invitación acaba de usarse.',
   suspended: 'Esta cuenta está suspendida.',
