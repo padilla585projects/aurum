@@ -1,0 +1,60 @@
+name: Pruebas
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Una ejecución por rama: si llegan dos empujones seguidos, la anterior se corta.
+concurrency:
+  group: pruebas-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  edge:
+    name: Edge (Pages Functions y frontend)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # Las Functions se comprueban de tipos aparte del frontend: tienen su
+      # propio tsconfig y hasta hace poco no se comprobaban en absoluto.
+      - name: Comprobar tipos de las Functions
+        run: npm run typecheck
+
+      - name: Compilar el frontend
+        run: npm run build
+
+      # Corren dentro de workerd con una D1 real de Miniflare, no contra dobles.
+      - name: Pruebas del edge
+        run: npm test
+
+  backend:
+    name: Backend privado
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      # Se instala requirements.txt completo a propósito: así el CI también
+      # avisa si el fichero de dependencias deja de ser instalable.
+      - name: Instalar dependencias
+        run: pip install -r backend/requirements-dev.txt
+
+      - name: Comprobar que todos los módulos compilan
+        run: python -m compileall -q backend
+
+      - name: Pruebas del backend
+        run: python -m pytest backend/tests

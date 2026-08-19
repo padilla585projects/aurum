@@ -130,6 +130,21 @@ Consulta [docs/HANDOFF.md](docs/HANDOFF.md) para el estado técnico, límites ac
 
 ---
 
+## Pruebas
+
+```bash
+npm test              # Pages Functions, dentro de workerd y con una D1 real
+npm run test:backend  # backend FastAPI, con SQLite desechable
+npm run check         # las dos, más el build y la comprobación de tipos
+```
+
+Las del edge no usan dobles: corren en el mismo runtime que Cloudflare y cada
+petición pasa por el middleware, así que cubren sesión, CORS, CSRF y límites. Las
+del backend no salen a la red ni tocan `backend/aurum.db`. Ambas se ejecutan en
+CI en cada pull request. Detalle en [docs/TESTING.md](docs/TESTING.md).
+
+---
+
 ## Generar APK Android
 
 ```bash
@@ -152,7 +167,10 @@ aurum/
 ├── functions/_lib/          # Cripto, sesiones, límites y utilidades del edge
 ├── db/migrations/           # Esquema D1 (usuarios, sesiones, estado, auditoría)
 ├── backend/                 # FastAPI: broker, automatización, Telegram y agente local
+├── test/edge/               # Pruebas de las Functions (Vitest sobre workerd)
+├── backend/tests/           # Pruebas del backend (pytest)
 ├── docs/HANDOFF.md          # Estado técnico y plan de continuación
+├── docs/TESTING.md          # Qué cubre cada suite y cómo ejecutarlas
 ├── public/
 │   └── manifest.json        # PWA manifest
 ├── index.html

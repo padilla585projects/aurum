@@ -1,6 +1,6 @@
 # Continuidad del proyecto AURUM
 
-Actualizado: 2026-08-18
+Actualizado: 2026-08-19
 
 ## Qué es
 
@@ -51,13 +51,21 @@ El propietario emite un token de backend por persona con `POST /admin/tokens`, y
 
 ## Estado verificado
 
-- `npm run build` pasa.
-- `npx tsc -p functions/tsconfig.json` pasa (las Functions ahora se comprueban de tipos, antes no).
-- `python -m py_compile` pasa en todos los módulos del backend.
+Ya hay **suite de pruebas automatizada**, en CI. Detalle en [TESTING.md](TESTING.md).
+
+```bash
+npm run check   # build + tipos de las Functions + edge (145) + backend (78)
+```
+
+- **223 pruebas**, 145 del edge y 78 del backend, sin red ni credenciales reales.
+- Las del edge corren dentro de **workerd** con una **D1 de Miniflare**, no contra dobles: es el mismo runtime que Cloudflare, con las migraciones de `db/migrations` aplicadas. Cada petición pasa por `functions/api/_middleware.ts`, así que lo que se prueba incluye sesión, CORS, CSRF y límites.
+- Las del backend usan una SQLite desechable y un `TestClient` sin lifespan, de modo que no arrancan ni el planificador ni el bot de Telegram.
+- `.github/workflows/tests.yml` las ejecuta en cada empujón a `main` y en cada pull request, junto al build del frontend, `tsc` de las Functions y `compileall` del backend.
+
+Comprobado además a mano, y no cubierto por la suite:
+
 - Probado en `wrangler pages dev` con D1 local: alta del propietario, entrada en la app, emisión de invitación y persistencia del perfil en `user_state`.
-- Probado con `curl`: 401 sin sesión en IA/mercado/estado, 403 en preflight desde origen ajeno, 403 en escritura con cookie desde origen ajeno, 400 con modelo fuera de la allowlist, 429 al superar el límite de login.
-- Probado con `TestClient`: bootstrap del primer token y caducidad de la clave heredada, separación de roles y ámbitos, cifrado en reposo, doble confirmación de un solo uso, límite diario e idempotencia.
-- **Sigue sin haber suite de pruebas automatizada**: todo lo anterior son comprobaciones manuales reproducibles, no tests en CI.
+- Sin cubrir: el frontend (`src/`), la ejecución real de una orden contra Trade Republic y el recorrido del deep link en un móvil real.
 
 ## Riesgos pendientes
 
