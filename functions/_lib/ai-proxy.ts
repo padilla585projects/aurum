@@ -29,6 +29,8 @@ interface ProviderConfig {
   projectKey: (env: Env) => string | undefined;
   /** Modelos admitidos con la clave del proyecto. Sin lista, no se restringe. */
   allowed?: string[];
+  /** Modelo a usar con la clave del proyecto, en los que no tienen allowlist. */
+  projectModel?: (env: Env) => string | undefined;
 }
 
 export const PROVIDERS: Record<Provider, ProviderConfig> = {
@@ -64,18 +66,21 @@ export const PROVIDERS: Record<Provider, ProviderConfig> = {
     endpoint: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
     auth: 'bearer',
     projectKey: env => env.GEMINI_API_KEY,
+    projectModel: env => env.GEMINI_MODEL,
   },
   grok: {
     label: 'Grok',
     endpoint: 'https://api.x.ai/v1/chat/completions',
     auth: 'bearer',
     projectKey: env => env.XAI_API_KEY,
+    projectModel: env => env.XAI_MODEL,
   },
   openrouter: {
     label: 'OpenRouter',
     endpoint: 'https://openrouter.ai/api/v1/chat/completions',
     auth: 'bearer',
     projectKey: env => env.OPENROUTER_API_KEY,
+    projectModel: env => env.OPENROUTER_MODEL,
   },
 };
 
@@ -125,8 +130,10 @@ export async function resolveCredentials(
     // Fallo de lectura: se intenta con la clave del proyecto.
   }
 
-  const projectKey = PROVIDERS[provider].projectKey(env);
-  return projectKey ? { key: projectKey, source: 'project', model: null } : null;
+  const config = PROVIDERS[provider];
+  const projectKey = config.projectKey(env);
+  if (!projectKey) return null;
+  return { key: projectKey, source: 'project', model: config.projectModel?.(env) ?? null };
 }
 
 /* ── Validación del cuerpo ───────────────────────────────────── */
@@ -153,11 +160,9 @@ export async function validateBody(
     return fail(400, 'bad_request', 'El cuerpo no es JSON válido.');
   }
 
-  // El modelo que el usuario dejó en Ajustes manda sobre el que pida el cliente:
-  // es el que corresponde a su clave y a su catálogo.
-  if (credentials.source === 'user' && credentials.model) {
-    body.model = credentials.model;
-  }
+  // El modelo configurado manda sobre el que pida el cliente: es el que
+  // corresponde a esa clave y a su catálogo, la aporte el usuario o el proyecto.
+  if (credentials.model) body.model = credentials.model;
 
   const model = typeof body.model === 'string' ? body.model : '';
   if (!model) return fail(400, 'model_missing', 'Falta el modelo en la petición.');
@@ -266,10 +271,11 @@ export async function proxyToProvider(context: ProxyContext, provider: Provider)
     );
   }
 
-  // En los proveedores que aporta el usuario no se puede adivinar el catalogo:
-  // el modelo tiene que salir de Ajustes. Se responde 503 —igual que si faltara
-  // la clave— para que el cliente use su ruta de respaldo en vez de fallar.
-  if (!config.allowed && credentials.source === 'user' && !credentials.model) {
+  // En los proveedores sin allowlist no se puede adivinar el catálogo: el
+  // modelo tiene que venir configurado junto a la clave, la ponga el usuario en
+  // Ajustes o el despliegue en sus variables. Se responde 503 —igual que si
+  // faltara la clave— para que el cliente use su respaldo en vez de fallar.
+  if (!config.allowed && !credentials.model) {
     return fail(
       503,
       'model_not_configured',

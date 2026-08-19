@@ -40,6 +40,15 @@ export interface Env {
   XAI_API_KEY?: string;
   OPENROUTER_API_KEY?: string;
 
+  /**
+   * Modelo a usar con la clave del proyecto en los proveedores sin allowlist.
+   * Su catalogo es demasiado movil para fijarlo en el codigo, asi que se
+   * configura junto a la clave.
+   */
+  GEMINI_MODEL?: string;
+  XAI_MODEL?: string;
+  OPENROUTER_MODEL?: string;
+
   /** Secreto para firmar valores efímeros (state de OAuth). Obligatorio. */
   AURUM_SIGNING_SECRET: string;
   /** Alta del primer owner. Se borra tras crear la cuenta inicial. */

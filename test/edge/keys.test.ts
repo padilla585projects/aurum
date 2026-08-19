@@ -173,6 +173,19 @@ describe('a quién restringe la allowlist', () => {
     expect((res as { body: Record<string, unknown> }).body.max_tokens).toBe(8192);
   });
 
+  it('sin modelo configurado, el proveedor sin allowlist no esta listo', async () => {
+    // Da igual quien ponga la clave: el catalogo de estos proveedores cambia
+    // solo, asi que el modelo tiene que venir configurado junto a ella.
+    const { token } = await seedLoggedIn();
+    await dispatch('/api/keys', { method: 'PUT', bearer: token, body: { provider: 'grok', key: 'sk-sin-modelo' } });
+
+    const res = await dispatch('/api/grok', {
+      method: 'POST', bearer: token, body: { model: 'lo-que-sea', messages: [] },
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ error: { code: 'model_not_configured' } });
+  });
+
   it('los proveedores con clave del usuario no llevan allowlist', () => {
     expect(PROVIDERS.gemini.allowed).toBeUndefined();
     expect(PROVIDERS.grok.allowed).toBeUndefined();
