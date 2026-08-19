@@ -3860,13 +3860,23 @@ function ProviderKeysSection() {
             )}
 
             <div style={{ display:'flex', gap:7, flexWrap:'wrap' }}>
+              {/* La clave guardada no se puede volver a leer: ni el servidor la
+                  devuelve, que es lo que impide sacarla desde la consola del
+                  navegador. Pero un campo en blanco se lee como «no se guardo»,
+                  asi que el hueco lo ocupa la pista — puntos y los cuatro
+                  ultimos caracteres — y el borde se marca cuando hay una. */}
               <input
                 type="password"
                 value={campo(p.id).key}
                 onChange={e => editar(p.id, { key:e.target.value })}
-                placeholder={p.hasOwnKey ? 'Reemplazar clave…' : 'Clave de API'}
+                placeholder={p.hasOwnKey ? `${p.hint}  ·  escribe para reemplazar` : 'Clave de API'}
                 autoComplete="off"
-                style={{ ...inputBase, flex:'2 1 190px', width:'auto' }}
+                style={{
+                  ...inputBase, flex:'2 1 190px', width:'auto',
+                  ...(p.hasOwnKey && !campo(p.id).key
+                    ? { borderColor:`${C.green}55`, background:`${C.green}0c` }
+                    : {}),
+                }}
               />
               <select
                 value={campo(p.id).model || p.model || ''}
