@@ -2947,11 +2947,17 @@ function BackendSection() {
 
   return (
     <div>
-      <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.18em', fontWeight:600, color:C.goldL, marginBottom:4 }}>Tu backend</div>
+      <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.18em', fontWeight:600, color:C.goldL, marginBottom:4 }}>
+        Tu backend <span style={{ fontSize:'.62em', fontFamily:"'Sora',sans-serif", fontWeight:400, color:C.muted, letterSpacing:'1px', textTransform:'uppercase' }}>opcional</span>
+      </div>
       <div style={{ fontSize:'.74em', color:C.muted, marginBottom:14, lineHeight:1.5 }}>
-        Un programa que corre en tu ordenador y lee tu cartera real de Trade Republic. Tus
-        credenciales se quedan ahí, cifradas, y no salen de tu máquina. Se instala ejecutando
-        <code style={{ color:C.text }}> instalar.ps1 </code>(Windows) o
+        <strong style={{ color:C.text }}>No hace falta para usar AURUM.</strong> El chat con los agentes,
+        Research, el simulador y la cartera llevada a mano funcionan sin nada de esto.
+        <br /><br />
+        Esto sirve para una cosa concreta: que AURUM vea tu <strong style={{ color:C.text }}>cartera
+        real de Trade Republic</strong> en lugar de que la escribas tú. Es un programa que corre en tu
+        ordenador; tus credenciales se quedan ahí, cifradas, y no salen de tu máquina. Se instala
+        ejecutando<code style={{ color:C.text }}> instalar.ps1 </code>(Windows) o
         <code style={{ color:C.text }}> instalar.sh </code>(Linux y macOS) dentro de la carpeta
         <code style={{ color:C.text }}> backend</code>; al terminar te da la dirección y el token
         que van aquí abajo.

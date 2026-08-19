@@ -1,6 +1,15 @@
 # Conectar AURUM con tu broker
 
-AURUM funciona sin nada de esto: puedes llevar tu cartera a mano, hablar con los agentes y usar el simulador. Este documento es solo para lo demás — **ver tu cartera real de Trade Republic** dentro de la aplicación.
+> **Si solo quieres el asesor, no necesitas nada de este documento.** Abre la aplicación, pon tu clave de IA en Ajustes y ya está: chat con los agentes, Research, análisis y simulador funcionan sin instalar nada.
+
+Esto es para una cosa concreta: que AURUM **vea tu cartera real de Trade Republic** en lugar de que la escribas tú. Mucha gente prefiere llevarla a mano, y es una opción perfectamente válida — no pierdes ningún consejo por ello, solo escribes tus posiciones una vez.
+
+| | Sin backend | Con backend |
+| --- | --- | --- |
+| Chat, Research, simulador | Sí | Sí |
+| Cartera | La escribes tú | Se lee sola de Trade Republic |
+| Comprar y vender | No | Solo si lo activas a mano |
+| Agente que maneja el PC | No | Sí |
 
 ## Por qué hace falta un programa aparte
 

@@ -103,7 +103,12 @@ Las variables locales van en `.dev.vars` (ignorado por git).
 
 ---
 
-## Backend privado (operaciones y automatización)
+## Backend privado (opcional)
+
+**No hace falta para usar AURUM.** El chat, Research, el simulador y la cartera manual funcionan
+solo con el frontend y una clave de IA. El backend añade una cosa: leer la cartera real de Trade
+Republic en vez de escribirla a mano, más ejecución de órdenes y el agente local.
+
 
 El directorio `backend/` contiene un servicio FastAPI independiente para Trade Republic, alertas de Telegram y agentes locales. Está pensado para una red privada (por ejemplo, Tailscale), no para Internet pública.
 
