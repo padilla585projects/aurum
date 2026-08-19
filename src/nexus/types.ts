@@ -1,4 +1,4 @@
-export type Provider = 'anthropic' | 'openai' | 'deepseek';
+export type Provider = 'anthropic' | 'openai' | 'deepseek' | 'gemini' | 'grok' | 'openrouter';
 export type AgentKey = 'aurum' | 'macro' | 'riesgo' | 'fiscal';
 export type ResearchTask = 'news' | 'financials' | 'analysts' | 'macro' | 'risks' | 'synthesis' | 'prices';
 
@@ -54,4 +54,7 @@ export const PROVIDER_META: Record<Provider, { label: string; color: string; sho
   anthropic: { label: 'Claude',     color: '#c9a84c', short: 'Claude'    },
   openai:    { label: 'GPT-4o',     color: '#2a9d6e', short: 'GPT-4o'    },
   deepseek:  { label: 'DeepSeek',   color: '#9b6cf6', short: 'DeepSeek'  },
+  gemini:    { label: 'Gemini',     color: '#5b9cf6', short: 'Gemini'    },
+  grok:      { label: 'Grok',       color: '#e8734a', short: 'Grok'      },
+  openrouter:{ label: 'OpenRouter', color: '#1abc9c', short: 'OpenRouter'},
 };

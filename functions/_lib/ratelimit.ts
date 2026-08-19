@@ -27,6 +27,12 @@ export const LIMITS: Record<string, Limit> = {
   'ai:anthropic':  { max: 60,  windowSeconds: 60 * 60 },
   'ai:openai':     { max: 60,  windowSeconds: 60 * 60 },
   'ai:deepseek':   { max: 60,  windowSeconds: 60 * 60 },
+  'ai:gemini':     { max: 60,  windowSeconds: 60 * 60 },
+  'ai:grok':       { max: 60,  windowSeconds: 60 * 60 },
+  // Mas holgado: es el destino de las consultas de datos publicos del Research,
+  // que se lanzan en tandas.
+  'ai:openrouter': { max: 120, windowSeconds: 60 * 60 },
+  'keys:write':    { max: 30,  windowSeconds: 60 * 60 },
   'ai:daily':      { max: 400, windowSeconds: 24 * 60 * 60 },
   'market':        { max: 120, windowSeconds: 60 * 60 },
   'state:read':    { max: 600, windowSeconds: 60 * 60 },

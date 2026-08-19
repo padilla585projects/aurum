@@ -11,10 +11,11 @@
 import { env } from 'cloudflare:test';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  ALLOWED_MODELS,
   MAX_OUTPUT_TOKENS,
+  PROVIDERS,
   extractUsage,
   validateBody,
+  type Credentials,
 } from '../../functions/_lib/ai-proxy.ts';
 import { dispatch, seedLoggedIn } from './helpers.ts';
 
@@ -42,6 +43,11 @@ const CUERPO_VALIDO = {
 };
 
 describe('validateBody', () => {
+  /** Clave del proyecto: es el caso en el que la allowlist tiene que aplicar. */
+  const DEL_PROYECTO: Credentials = { key: 'k', source: 'project', model: null };
+  /** Clave del usuario: elige el modelo porque el gasto es suyo. */
+  const DEL_USUARIO: Credentials = { key: 'k', source: 'user', model: null };
+
   function peticion(body: unknown): Request {
     return new Request('https://aurum.test/api/anthropic', {
       method: 'POST',
@@ -50,43 +56,44 @@ describe('validateBody', () => {
   }
 
   it('acepta los modelos que AURUM usa de verdad', async () => {
-    for (const model of ALLOWED_MODELS.anthropic) {
-      const result = await validateBody(peticion({ ...CUERPO_VALIDO, model }), 'anthropic');
+    for (const model of PROVIDERS.anthropic.allowed!) {
+      const result = await validateBody(peticion({ ...CUERPO_VALIDO, model }), 'anthropic', DEL_PROYECTO);
       expect(result).not.toBeInstanceOf(Response);
       expect((result as { model: string }).model).toBe(model);
     }
   });
 
   it('rechaza cualquier otro modelo, aunque exista en el proveedor', async () => {
-    const result = await validateBody(peticion({ ...CUERPO_VALIDO, model: 'claude-3-opus-20240229' }), 'anthropic');
+    const result = await validateBody(peticion({ ...CUERPO_VALIDO, model: 'claude-3-opus-20240229' }), 'anthropic', DEL_PROYECTO);
     expect(result).toBeInstanceOf(Response);
     expect((result as Response).status).toBe(400);
     expect(await (result as Response).json()).toMatchObject({ error: { code: 'model_not_allowed' } });
   });
 
   it('no deja colar el modelo de un proveedor en otro', async () => {
-    const result = await validateBody(peticion({ ...CUERPO_VALIDO, model: 'gpt-4o' }), 'anthropic');
+    const result = await validateBody(peticion({ ...CUERPO_VALIDO, model: 'gpt-4o' }), 'anthropic', DEL_PROYECTO);
     expect(result).toBeInstanceOf(Response);
   });
 
   it('acota los tokens de salida, en los dos nombres de campo', async () => {
-    const anthropic = await validateBody(peticion({ ...CUERPO_VALIDO, max_tokens: 200_000 }), 'anthropic');
+    const anthropic = await validateBody(peticion({ ...CUERPO_VALIDO, max_tokens: 200_000 }), 'anthropic', DEL_PROYECTO);
     expect((anthropic as { body: Record<string, unknown> }).body.max_tokens).toBe(MAX_OUTPUT_TOKENS);
 
     const openai = await validateBody(
       peticion({ model: 'gpt-4o', max_completion_tokens: 200_000 }),
       'openai',
+      DEL_PROYECTO,
     );
     expect((openai as { body: Record<string, unknown> }).body.max_completion_tokens).toBe(MAX_OUTPUT_TOKENS);
   });
 
   it('respeta una petición por debajo del tope', async () => {
-    const result = await validateBody(peticion({ ...CUERPO_VALIDO, max_tokens: 512 }), 'anthropic');
+    const result = await validateBody(peticion({ ...CUERPO_VALIDO, max_tokens: 512 }), 'anthropic', DEL_PROYECTO);
     expect((result as { body: Record<string, unknown> }).body.max_tokens).toBe(512);
   });
 
   it('rechaza cuerpos que no son JSON o que son demasiado grandes', async () => {
-    const roto = (await validateBody(peticion('no soy json'), 'anthropic')) as Response;
+    const roto = (await validateBody(peticion('no soy json'), 'anthropic', DEL_PROYECTO)) as Response;
     expect(roto.status).toBe(400);
 
     const enorme = (await validateBody(
@@ -131,7 +138,7 @@ describe('proxy de Anthropic', () => {
     const { token } = await seedLoggedIn();
     const res = await dispatch('/api/anthropic', { method: 'POST', bearer: token, body: CUERPO_VALIDO });
     expect(res.status).toBe(503);
-    expect(await res.json()).toMatchObject({ error: { code: 'provider_disabled' } });
+    expect(await res.json()).toMatchObject({ error: { code: 'provider_not_configured' } });
   });
 
   it('reenvía la petición con la clave del proyecto y anota el consumo del usuario', async () => {

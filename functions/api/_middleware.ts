@@ -30,15 +30,22 @@ const PUBLIC_PATHS = new Set([
   '/api/auth/exchange',
 ]);
 
+/** Rutas de proveedores de IA, todas con el mismo tratamiento. */
+const AI_ROUTES = new Set([
+  '/api/anthropic', '/api/openai', '/api/deepseek',
+  '/api/gemini', '/api/grok', '/api/openrouter',
+]);
+
 /** Límite que aplica a cada ruta, y si el cubo va por usuario o por IP. */
 function limitsFor(path: string, method: string): string[] {
   if (path === '/api/auth/login') return ['auth:login'];
   if (path === '/api/auth/register') return ['auth:register'];
   if (path.startsWith('/api/auth/google') || path === '/api/auth/exchange') return ['auth:oauth'];
   if (path === '/api/auth/invite') return ['invite:create'];
-  if (path === '/api/anthropic') return ['ai:anthropic', 'ai:daily'];
-  if (path === '/api/openai') return ['ai:openai', 'ai:daily'];
-  if (path === '/api/deepseek') return ['ai:deepseek', 'ai:daily'];
+  // Todos los proveedores comparten el cubo diario: el limite es de uso de IA,
+  // no de un proveedor concreto.
+  if (AI_ROUTES.has(path)) return [`ai:${path.slice('/api/'.length)}`, 'ai:daily'];
+  if (path === '/api/keys') return [method === 'GET' ? 'state:read' : 'keys:write'];
   if (path === '/api/market') return ['market'];
   if (path.startsWith('/api/state')) return [method === 'GET' ? 'state:read' : 'state:write'];
   return [];

@@ -15,6 +15,17 @@ const PROD_URLS = {
 };
 const urls = isDev ? DEV_URLS : PROD_URLS;
 
+/**
+ * Proveedores cuya clave aporta cada usuario desde Ajustes. No tienen variante
+ * de desarrollo directo: la clave vive cifrada en el servidor, asi que la
+ * llamada siempre pasa por el proxy.
+ */
+const BYOK_URLS: Record<'gemini' | 'grok' | 'openrouter', string> = {
+  gemini:     '/api/gemini',
+  grok:       '/api/grok',
+  openrouter: '/api/openrouter',
+};
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
@@ -178,6 +189,44 @@ export async function callDeepSeek(
 }
 
 // ── Dispatcher unificado ─────────────────────────────────────────────────────
+// ── Proveedores con clave del usuario (Gemini, Grok, OpenRouter) ────────────
+// Los tres exponen el formato de chat de OpenAI, asi que comparten una sola
+// implementacion. El modelo lo decide el servidor a partir de lo que el usuario
+// guardo en Ajustes; el que se manda aqui es solo el valor por defecto.
+export async function callByok(
+  provider:      'gemini' | 'grok' | 'openrouter',
+  messages:      ChatMessage[],
+  system:        string,
+  model:         string,
+  maxTokens   =  1024,
+  contextPrefix?: string,
+): Promise<string> {
+  const msgs = contextPrefix ? injectContext(messages, contextPrefix) : messages;
+
+  const res = await fetch(BYOK_URLS[provider], {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({
+      model,
+      messages: [{ role: 'system', content: system }, ...msgs],
+      max_tokens: maxTokens,
+    }),
+  });
+
+  if (!res.ok) {
+    const detalle = await res.text();
+    throw new Error(`${provider} ${res.status}: ${detalle.slice(0, 300)}`);
+  }
+
+  const data = await res.json();
+  if (data.usage) updateTokenBudget({
+    input_tokens:  data.usage.prompt_tokens,
+    output_tokens: data.usage.completion_tokens,
+  });
+  return data.choices?.[0]?.message?.content?.trim() || 'Sin respuesta.';
+}
+
 export async function callProvider(
   route:          RouteResult,
   messages:       ChatMessage[],
@@ -194,5 +243,9 @@ export async function callProvider(
       return callOpenAI(messages, system, route.model, maxTokens, useWebSearch, contextPrefix);
     case 'deepseek':
       return callDeepSeek(messages, system, route.model, maxTokens, contextPrefix);
+    case 'gemini':
+    case 'grok':
+    case 'openrouter':
+      return callByok(route.provider, messages, system, route.model, maxTokens, contextPrefix);
   }
 }

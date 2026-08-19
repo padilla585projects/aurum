@@ -37,6 +37,7 @@ import { C, PIE_PAL } from './theme';
 import { useSession } from './store/session-context';
 import { createInvite } from './store/session';
 import { ApiError } from './store/api';
+import { deleteProviderKey, fetchProviderKeys, saveProviderKey, type ProviderKeyStatus } from './store/keys';
 
 /* ══════════════════════════════════════════════════════════════
    BOOTSTRAP
@@ -3671,6 +3672,111 @@ function AccountSection() {
   );
 }
 
+/* ── Claves de IA ─────────────────────────────────────────────────────────── */
+
+/**
+ * Claves de proveedor que aporta el usuario.
+ *
+ * Una clave guardada no se puede recuperar: el servidor solo devuelve una pista
+ * con los ultimos caracteres. El campo se deja vacio tras guardar para que
+ * quede claro que lo que hay escrito no es lo que esta almacenado.
+ *
+ * Con clave propia el usuario elige el modelo, porque paga el. Con la clave del
+ * proyecto los modelos van restringidos por allowlist.
+ */
+function ProviderKeysSection() {
+  const [providers, setProviders] = useState<ProviderKeyStatus[]>([]);
+  const [borrador, setBorrador]   = useState<Record<string, { key:string; model:string }>>({});
+  const [ocupado, setOcupado]     = useState<string|null>(null);
+  const [error, setError]         = useState<string|null>(null);
+  const [aviso, setAviso]         = useState<string|null>(null);
+
+  const recargar = () => { fetchProviderKeys().then(setProviders).catch(() => setError('No se ha podido leer la configuracion de claves.')); };
+  useEffect(recargar, []);
+
+  const campo = (id:string) => borrador[id] ?? { key:'', model:'' };
+  const editar = (id:string, parche:Partial<{key:string;model:string}>) =>
+    setBorrador(b => ({ ...b, [id]: { ...campo(id), ...parche } }));
+
+  const guardar = async (id:string) => {
+    const { key, model } = campo(id);
+    if (!key.trim()) { setError('Escribe la clave antes de guardar.'); return; }
+    setOcupado(id); setError(null); setAviso(null);
+    try {
+      await saveProviderKey(id, key.trim(), model);
+      setBorrador(b => ({ ...b, [id]: { key:'', model:'' } }));
+      setAviso('Clave guardada.');
+      recargar();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'No se ha podido guardar la clave.');
+    } finally { setOcupado(null); }
+  };
+
+  const borrar = async (id:string) => {
+    setOcupado(id); setError(null); setAviso(null);
+    try { await deleteProviderKey(id); setAviso('Clave eliminada.'); recargar(); }
+    catch (err) { setError(err instanceof ApiError ? err.message : 'No se ha podido borrar la clave.'); }
+    finally { setOcupado(null); }
+  };
+
+  return (
+    <div>
+      <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.18em', fontWeight:600, color:C.goldL, marginBottom:4 }}>Claves de IA</div>
+      <div style={{ fontSize:'.74em', color:C.muted, marginBottom:14, lineHeight:1.5 }}>
+        Puedes usar tus propias claves. Se guardan cifradas y no se pueden volver a leer:
+        solo veras los ultimos caracteres. Con clave propia eliges tu el modelo.
+      </div>
+
+      {error && <div style={{ marginBottom:10, fontSize:'.74em', color:C.red }}>{error}</div>}
+      {aviso && <div style={{ marginBottom:10, fontSize:'.74em', color:C.green }}>{aviso}</div>}
+
+      <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+        {providers.map(p => (
+          <div key={p.id} style={{ background:C.surf2, border:`1px solid ${C.border}`, borderRadius:11, padding:'12px 14px' }}>
+            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:8, marginBottom:9 }}>
+              <span style={{ fontSize:'.84em', color:C.text }}>{p.label}</span>
+              <span style={{ fontSize:'.68em', color: p.hasOwnKey ? C.green : p.hasProjectKey ? C.muted : C.red }}>
+                {p.hasOwnKey ? `tu clave ${p.hint}` : p.hasProjectKey ? 'clave del proyecto' : 'sin configurar'}
+              </span>
+            </div>
+
+            {p.hasOwnKey && p.model && (
+              <div style={{ fontSize:'.68em', color:C.muted, marginBottom:8 }}>Modelo: {p.model}</div>
+            )}
+
+            <div style={{ display:'flex', gap:7, flexWrap:'wrap' }}>
+              <input
+                type="password"
+                value={campo(p.id).key}
+                onChange={e => editar(p.id, { key:e.target.value })}
+                placeholder={p.hasOwnKey ? 'Reemplazar clave…' : 'Clave de API'}
+                autoComplete="off"
+                style={{ ...inputBase, flex:'2 1 190px', width:'auto' }}
+              />
+              <input
+                value={campo(p.id).model}
+                onChange={e => editar(p.id, { model:e.target.value })}
+                placeholder={p.model || 'Modelo (opcional)'}
+                style={{ ...inputBase, flex:'1 1 130px', width:'auto' }}
+              />
+              <button onClick={() => void guardar(p.id)} disabled={ocupado===p.id}
+                style={{ background:ocupado===p.id?C.surf3:C.gold, color:ocupado===p.id?C.muted:C.bg, border:'none', borderRadius:9, padding:'8px 14px', fontSize:'.76em', fontWeight:600, fontFamily:"'Sora',sans-serif", cursor:ocupado===p.id?'default':'pointer' }}>
+                Guardar
+              </button>
+              {p.hasOwnKey && (
+                <button onClick={() => void borrar(p.id)} disabled={ocupado===p.id}
+                  style={{ background:'transparent', border:`1px solid ${C.border2}`, borderRadius:9, padding:'8px 12px', color:C.muted, fontSize:'.76em', fontFamily:"'Sora',sans-serif", cursor:'pointer' }}>
+                  Quitar
+                </button>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function SettingsTab({ profile, setProfile, userProfile, setUserProfile }:{
   profile: string;
   setProfile: (p:string)=>void;
@@ -3701,6 +3807,8 @@ function SettingsTab({ profile, setProfile, userProfile, setUserProfile }:{
       <div style={{ maxWidth:700, margin:'0 auto', display:'flex', flexDirection:'column', gap:24 }}>
 
         <AccountSection />
+
+        <ProviderKeysSection />
 
         {/* Perfil de riesgo */}
         <div>

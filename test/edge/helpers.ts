@@ -28,6 +28,10 @@ import * as routeMarket from '../../functions/api/market.ts';
 import * as routeAnthropic from '../../functions/api/anthropic.ts';
 import * as routeOpenai from '../../functions/api/openai.ts';
 import * as routeDeepseek from '../../functions/api/deepseek.ts';
+import * as routeGemini from '../../functions/api/gemini.ts';
+import * as routeGrok from '../../functions/api/grok.ts';
+import * as routeOpenrouter from '../../functions/api/openrouter.ts';
+import * as routeKeys from '../../functions/api/keys.ts';
 
 type Handler = (context: PagesContext) => Promise<Response>;
 type HandlerModule = Record<string, unknown>;
@@ -47,6 +51,10 @@ const ROUTES: Record<string, HandlerModule> = {
   '/api/anthropic': routeAnthropic,
   '/api/openai': routeOpenai,
   '/api/deepseek': routeDeepseek,
+  '/api/gemini': routeGemini,
+  '/api/grok': routeGrok,
+  '/api/openrouter': routeOpenrouter,
+  '/api/keys': routeKeys,
 };
 
 const METHOD_EXPORT: Record<string, string> = {

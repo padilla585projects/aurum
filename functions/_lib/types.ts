@@ -28,10 +28,17 @@ export interface D1Database {
 export interface Env {
   DB: D1Database;
 
-  /** Claves de los proveedores de IA (nunca salen del edge). */
+  /**
+   * Claves de los proveedores de IA a nivel de proyecto (nunca salen del edge).
+   * Son opcionales: cada usuario puede aportar la suya desde Ajustes, y esta
+   * solo actua como respaldo compartido.
+   */
   ANTHROPIC_API_KEY?: string;
   OPENAI_API_KEY?: string;
   DEEPSEEK_API_KEY?: string;
+  GEMINI_API_KEY?: string;
+  XAI_API_KEY?: string;
+  OPENROUTER_API_KEY?: string;
 
   /** Secreto para firmar valores efímeros (state de OAuth). Obligatorio. */
   AURUM_SIGNING_SECRET: string;
