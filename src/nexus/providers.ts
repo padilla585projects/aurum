@@ -79,13 +79,21 @@ export async function callAnthropic(
     // Tracking de tokens (siempre disponible en la respuesta)
     if (data.usage) updateTokenBudget(data.usage, webSearchUsed);
 
-    if (data.stop_reason === 'end_turn') {
-      return data.content
-        .filter((b: any) => b.type === 'text')
-        .map((b: any) => b.text)
-        .join('\n')
-        .trim();
+    const texto: string = (data.content ?? [])
+      .filter((b: any) => b.type === 'text')
+      .map((b: any) => b.text)
+      .join('\n')
+      .trim();
+
+    if (data.stop_reason === 'end_turn') return texto;
+
+    // Los turnos largos con herramientas de servidor se interrumpen con
+    // pause_turn: hay que continuar la conversacion, no darla por terminada.
+    if (data.stop_reason === 'pause_turn') {
+      cur.push({ role: 'assistant', content: data.content });
+      continue;
     }
+
     if (data.stop_reason === 'tool_use' && useWebSearch) {
       webSearchUsed = true;
       if (onSearch) onSearch();
@@ -96,7 +104,13 @@ export async function callAnthropic(
           .filter((b: any) => b.type === 'tool_use')
           .map((b: any) => ({ type: 'tool_result', tool_use_id: b.id, content: 'Search executed' })),
       });
-    } else break;
+    } else {
+      // max_tokens, stop_sequence, refusal... Devolver lo generado en lugar de
+      // tirarlo: esos tokens ya se han pagado, y una respuesta cortada es mas
+      // util que un «Sin respuesta».
+      if (texto) return texto;
+      break;
+    }
   }
   return 'Sin respuesta.';
 }

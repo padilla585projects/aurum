@@ -11,7 +11,7 @@
 
 import type { PagesContext } from '../_lib/types.ts';
 import { fail } from '../_lib/http.ts';
-import { extractUsage, recordUsage, validateBody } from '../_lib/ai-proxy.ts';
+import { extractStopReason, extractUsage, recordUsage, validateBody } from '../_lib/ai-proxy.ts';
 
 export async function onRequestPost(context: PagesContext): Promise<Response> {
   const { request, env, data } = context;
@@ -45,7 +45,7 @@ export async function onRequestPost(context: PagesContext): Promise<Response> {
   }
 
   context.waitUntil(
-    recordUsage(env, user, 'anthropic', validated.model, res.status, extractUsage('anthropic', payload)),
+    recordUsage(env, user, 'anthropic', validated.model, res.status, extractUsage('anthropic', payload), extractStopReason('anthropic', payload)),
   );
 
   return new Response(text, {

@@ -99,6 +99,15 @@ export function extractUsage(provider: Provider, payload: unknown): UsageCounts 
   };
 }
 
+/** Motivo de parada, para poder diagnosticar respuestas que el cliente descarta. */
+export function extractStopReason(provider: Provider, payload: unknown): string | null {
+  const p = payload as Record<string, unknown> | null;
+  if (!p) return null;
+  if (provider === 'anthropic') return typeof p.stop_reason === 'string' ? p.stop_reason : null;
+  const choice = (p.choices as { finish_reason?: unknown }[] | undefined)?.[0];
+  return typeof choice?.finish_reason === 'string' ? choice.finish_reason : null;
+}
+
 export async function recordUsage(
   env: Env,
   user: SessionUser,
@@ -106,12 +115,13 @@ export async function recordUsage(
   model: string,
   status: number,
   usage: UsageCounts,
+  stopReason: string | null = null,
 ): Promise<void> {
   try {
     await env.DB.prepare(
-      `INSERT INTO ai_usage (ts, user_id, provider, model, input_tokens, output_tokens, cached_tokens, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(Date.now(), user.id, provider, model, usage.input, usage.output, usage.cached, status).run();
+      `INSERT INTO ai_usage (ts, user_id, provider, model, input_tokens, output_tokens, cached_tokens, status, stop_reason)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(Date.now(), user.id, provider, model, usage.input, usage.output, usage.cached, status, stopReason).run();
   } catch {
     // El registro de consumo no debe impedir que el usuario reciba su respuesta.
   }
