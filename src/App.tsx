@@ -2884,10 +2884,15 @@ function BackendSection() {
       const res = await backendCall({ url, apiKey }, '/health');
       if (res.status !== 'ok') { setStatus('error'); setStatusMsg('Ha respondido algo que no parece un backend de AURUM. Revisa la dirección.'); return; }
 
+      // /health no pide token: comprobar solo eso daria por buena una
+      // configuracion con el token equivocado, y el fallo apareceria despues,
+      // al intentar leer la cartera. Se valida tambien la credencial.
+      const quien = await backendCall({ url, apiKey }, '/me');
+
       setStatus('ok');
       setStatusMsg(res.tr_authenticated
-        ? '✓ Conectado. Trade Republic ya está enlazado.'
-        : '✓ Conectado. Falta enlazar Trade Republic, aquí abajo.');
+        ? `✓ Conectado como ${quien.user_email}. Trade Republic ya está enlazado.`
+        : `✓ Conectado como ${quien.user_email}. Falta enlazar Trade Republic, aquí abajo.`);
       await sSet('aurum-backend-config', { url, apiKey });
     } catch(e:any) {
       setStatus('error');
