@@ -4,7 +4,7 @@
 
 import type { PagesContext } from '../_lib/types.ts';
 import { fail } from '../_lib/http.ts';
-import { extractUsage, recordUsage, validateBody } from '../_lib/ai-proxy.ts';
+import { extractStopReason, extractUsage, recordUsage, validateBody } from '../_lib/ai-proxy.ts';
 
 export async function onRequestPost(context: PagesContext): Promise<Response> {
   const { request, env, data } = context;
@@ -33,7 +33,7 @@ export async function onRequestPost(context: PagesContext): Promise<Response> {
   }
 
   context.waitUntil(
-    recordUsage(env, user, 'openai', validated.model, res.status, extractUsage('openai', payload)),
+    recordUsage(env, user, 'openai', validated.model, res.status, extractUsage('openai', payload), extractStopReason('openai', payload)),
   );
 
   return new Response(text, {
