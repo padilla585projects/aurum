@@ -64,7 +64,15 @@ export const LEGACY_KEYS = [
  * Claves que NO se sincronizan: son propias del dispositivo o contienen
  * credenciales que no deben salir de él.
  */
-const DEVICE_ONLY = new Set(['aurum-backend-config', 'aurum-price-refresh-ts', 'aurum-session-token']);
+const DEVICE_ONLY = new Set(['aurum-price-refresh-ts', 'aurum-session-token']);
+
+/**
+ * La configuracion del backend privado va por su propio camino: contiene un
+ * token, asi que no puede viajar por /api/state en claro. Se guarda cifrada en
+ * /api/backend-config, pero se expone aqui bajo la misma clave de siempre para
+ * que todo lo que ya la lee siga funcionando igual.
+ */
+const CLAVE_BACKEND = 'aurum-backend-config';
 
 /* ── Espejo local ────────────────────────────────────────────── */
 
@@ -131,6 +139,7 @@ export async function hydrate(userId: string): Promise<{ online: boolean }> {
       writeMirror(key, entry);
     }
     hydrated = true;
+    await cargarConfigBackend();
     await migrateLegacy();
     void flush();
     return { online: true };
@@ -168,6 +177,16 @@ async function migrateLegacy(): Promise<void> {
   if (migrated > 0) await flush();
 }
 
+/** Trae la configuracion del backend privado y la deja en la cache. */
+async function cargarConfigBackend(): Promise<void> {
+  try {
+    const { config } = await apiFetch<{ config: { url: string; apiKey: string } | null }>('/api/backend-config');
+    if (config) cache.set(CLAVE_BACKEND, { value: config, version: 0, dirty: false });
+  } catch {
+    // Sin conexion se sigue con lo que hubiera en el espejo local.
+  }
+}
+
 /** Cierra la sesión de estado. No borra el espejo: sirve al volver a entrar. */
 export function detach(): void {
   if (flushTimer) clearTimeout(flushTimer);
@@ -193,6 +212,22 @@ export function get<T>(key: string, fallback: T): T {
 
 export function set(key: string, value: unknown): void {
   if (DEVICE_ONLY.has(key)) return writeDeviceOnly(key, value);
+
+  if (key === CLAVE_BACKEND) {
+    // Se guarda en memoria para que la lectura sincrona la vea al momento, y
+    // se manda cifrada al servidor para que siga al usuario a otros equipos.
+    cache.set(key, { value, version: 0, dirty: false });
+    const cfg = value as { url?: string; apiKey?: string } | null;
+    if (cfg?.url && cfg?.apiKey) {
+      void apiFetch('/api/backend-config', {
+        method: 'PUT',
+        body: JSON.stringify({ url: cfg.url, token: cfg.apiKey }),
+      }).catch(() => {
+        // Sin conexion queda en memoria; se reintenta al volver a guardar.
+      });
+    }
+    return;
+  }
   const previous = cache.get(key);
   const entry: Entry = { value, version: previous?.version ?? 0, dirty: true };
   cache.set(key, entry);
@@ -201,6 +236,11 @@ export function set(key: string, value: unknown): void {
 }
 
 export function remove(key: string): void {
+  if (key === CLAVE_BACKEND) {
+    cache.delete(key);
+    void apiFetch('/api/backend-config', { method: 'DELETE' }).catch(() => {});
+    return;
+  }
   if (DEVICE_ONLY.has(key)) {
     try {
       localStorage.removeItem(key);

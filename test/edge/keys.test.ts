@@ -164,6 +164,67 @@ describe('/api/keys', () => {
   });
 });
 
+describe('/api/backend-config', () => {
+  const URL_BACKEND = 'https://aurum-backend.tailnet.ts.net';
+  const TOKEN = 'token-del-backend-privado-123456';
+
+  it('no responde sin sesión', async () => {
+    expect((await dispatch('/api/backend-config')).status).toBe(401);
+  });
+
+  it('sin configurar devuelve null, no un error', async () => {
+    const { token } = await seedLoggedIn();
+    const res = await dispatch('/api/backend-config', { bearer: token });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ config: null });
+  });
+
+  it('guarda cifrado y devuelve el token al dueño', async () => {
+    const { user, token } = await seedLoggedIn();
+    const guardado = await dispatch('/api/backend-config', {
+      method: 'PUT', bearer: token, body: { url: URL_BACKEND, token: TOKEN },
+    });
+    expect(guardado.status).toBe(200);
+
+    // En la base no esta en claro.
+    const fila = await env.DB.prepare(
+      'SELECT url, token_enc FROM user_backend_config WHERE user_id = ?',
+    ).bind(user.id).first<{ url: string; token_enc: string }>();
+    expect(fila!.url).toBe(URL_BACKEND);
+    expect(fila!.token_enc).not.toContain(TOKEN);
+
+    // Pero al dueño si se le devuelve: es el navegador quien llama al backend.
+    const leido = await dispatch('/api/backend-config', { bearer: token });
+    expect(await leido.json()).toMatchObject({ config: { url: URL_BACKEND, apiKey: TOKEN } });
+  });
+
+  it('la configuración de un usuario no la ve otro', async () => {
+    const primero = await seedLoggedIn({ email: 'uno@aurum.test' });
+    const segundo = await seedLoggedIn({ email: 'dos@aurum.test' });
+    await dispatch('/api/backend-config', {
+      method: 'PUT', bearer: primero.token, body: { url: URL_BACKEND, token: TOKEN },
+    });
+    const res = await dispatch('/api/backend-config', { bearer: segundo.token });
+    expect(await res.json()).toMatchObject({ config: null });
+  });
+
+  it('rechaza direcciones sin esquema', async () => {
+    const { token } = await seedLoggedIn();
+    const res = await dispatch('/api/backend-config', {
+      method: 'PUT', bearer: token, body: { url: 'aurum-backend.local:8000', token: TOKEN },
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('se puede borrar', async () => {
+    const { token } = await seedLoggedIn();
+    await dispatch('/api/backend-config', { method: 'PUT', bearer: token, body: { url: URL_BACKEND, token: TOKEN } });
+    expect((await dispatch('/api/backend-config', { method: 'DELETE', bearer: token })).status).toBe(200);
+    const res = await dispatch('/api/backend-config', { bearer: token });
+    expect(await res.json()).toMatchObject({ config: null });
+  });
+});
+
 describe('eleccion automatica de modelo', () => {
   const catalogo = [
     { id: 'caro/grande',   nombre: 'caro',   entrada: 10, salida: 30,  contexto: 200_000, gratuito: false },
