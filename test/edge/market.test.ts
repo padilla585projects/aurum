@@ -84,6 +84,21 @@ describe('/api/market', () => {
     expect(cuerpo.data![0].changePct).toBeNull();
   });
 
+  it('la caché es privada: una intermedia no puede servirla a quien no tiene sesión', async () => {
+    const { token } = await seedLoggedIn();
+    vi.stubGlobal('fetch', vi.fn(async () => chart(1, 1)));
+
+    const res = await dispatch('/api/market', { bearer: token });
+    expect(res.headers.get('Cache-Control')).toBe('private, max-age=60');
+  });
+
+  it('una excepción de red no se propaga como error del servidor', async () => {
+    const { token } = await seedLoggedIn();
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('sin salida'); }));
+
+    expect((await pedirMercado(token)).status).toBe(502);
+  });
+
   it('si no llega ninguna cotización se dice, en vez de devolver seis huecos', async () => {
     const { token } = await seedLoggedIn();
     vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 401 })));
