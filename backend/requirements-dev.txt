@@ -1,0 +1,4 @@
+# Solo para ejecutar la suite de pruebas del backend.
+# En el servidor no hace falta instalar nada de aquí.
+-r requirements.txt
+pytest==8.4.2

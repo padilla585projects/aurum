@@ -8,7 +8,12 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "deploy": "npm run build && wrangler pages deploy dist",
-    "android": "npm run build && npx cap sync android && npx cap open android"
+    "android": "npm run build && npx cap sync android && npx cap open android",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:backend": "python -m pytest backend/tests",
+    "typecheck": "tsc -p functions/tsconfig.json",
+    "check": "npm run build && npm run typecheck && npm test && npm run test:backend"
   },
   "dependencies": {
     "@capacitor/android": "^7.2.0",
@@ -21,11 +26,13 @@
   },
   "devDependencies": {
     "@capacitor/cli": "^7.2.0",
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
     "@types/react": "^18.3.23",
     "@types/react-dom": "^18.3.7",
     "@vitejs/plugin-react": "^4.5.2",
     "typescript": "^5.7.3",
     "vite": "^6.3.5",
+    "vitest": "^4.1.11",
     "wrangler": "^4.14.4"
   }
 }

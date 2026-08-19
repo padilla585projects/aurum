@@ -11,3 +11,6 @@ backend/__pycache__/
 backend/aurum.db
 backend/aurum.db-wal
 backend/aurum.db-shm
+__pycache__/
+.pytest_cache/
+coverage/
