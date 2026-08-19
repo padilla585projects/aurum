@@ -2868,12 +2868,21 @@ function BackendSection() {
   const [authMsg,    setAuthMsg]    = useState('');
   const fs: React.CSSProperties    = { ...inputBase, padding:'8px 12px' };
 
-  useState(() => {
-    sGet('aurum-backend-config').then((cfg:any) => {
-      if (cfg?.url)    setUrl(cfg.url);
-      if (cfg?.apiKey) setApiKey(cfg.apiKey);
-    });
-  });
+  // Esta clave no tiene espejo en el dispositivo —lleva un token—, asi que si
+  // la carga inicial no la trajo, aqui no hay nada que enseñar. En ese caso se
+  // vuelve a pedir al servidor en vez de dejar los campos en blanco, que se lee
+  // como si la configuracion se hubiera perdido.
+  useEffect(() => {
+    let vigente = true;
+    (async () => {
+      const cfg = await sGet<{ url?:string; apiKey?:string }>('aurum-backend-config')
+        ?? await store.recargarConfigBackend();
+      if (!vigente || !cfg) return;
+      if (cfg.url)    setUrl(cfg.url);
+      if (cfg.apiKey) setApiKey(cfg.apiKey);
+    })();
+    return () => { vigente = false; };
+  }, []);
 
   const testConnection = async () => {
     const problema = revisarDireccion(url);

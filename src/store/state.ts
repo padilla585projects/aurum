@@ -128,26 +128,38 @@ export async function hydrate(userId: string): Promise<{ online: boolean }> {
     if (entry) cache.set(key, entry);
   }
 
-  try {
-    const { state } = await apiFetch<ServerState>('/api/state');
-    for (const [key, remote] of Object.entries(state)) {
-      const local = cache.get(key);
-      // Un cambio local sin enviar no se pisa: se enviará en el próximo flush.
-      if (local?.dirty) continue;
-      const entry: Entry = { value: remote.value, version: remote.version, dirty: false };
-      cache.set(key, entry);
-      writeMirror(key, entry);
-    }
-    hydrated = true;
-    await cargarConfigBackend();
-    await migrateLegacy();
-    void flush();
-    return { online: true };
-  } catch (err) {
-    hydrated = true;
-    if (isOffline(err)) return { online: false };
-    throw err;
+  // Las dos cargas van en paralelo y por separado a propósito. Antes la del
+  // backend colgaba de que /api/state hubiera ido bien, así que cualquier fallo
+  // ahí dejaba los campos de Ajustes vacíos sin decir nada — y vacío se lee
+  // como «se ha borrado», que es justo lo que no era.
+  const [estado, backend] = await Promise.allSettled([
+    apiFetch<ServerState>('/api/state'),
+    apiFetch<RespuestaBackend>('/api/backend-config'),
+  ]);
+
+  if (backend.status === 'fulfilled' && backend.value.config) {
+    cache.set(CLAVE_BACKEND, { value: backend.value.config, version: 0, dirty: false });
   }
+
+  hydrated = true;
+
+  if (estado.status === 'rejected') {
+    if (isOffline(estado.reason)) return { online: false };
+    throw estado.reason;
+  }
+
+  for (const [key, remote] of Object.entries(estado.value.state)) {
+    const local = cache.get(key);
+    // Un cambio local sin enviar no se pisa: se enviará en el próximo flush.
+    if (local?.dirty) continue;
+    const entry: Entry = { value: remote.value, version: remote.version, dirty: false };
+    cache.set(key, entry);
+    writeMirror(key, entry);
+  }
+
+  await migrateLegacy();
+  void flush();
+  return { online: true };
 }
 
 /**
@@ -177,13 +189,22 @@ async function migrateLegacy(): Promise<void> {
   if (migrated > 0) await flush();
 }
 
-/** Trae la configuracion del backend privado y la deja en la cache. */
-async function cargarConfigBackend(): Promise<void> {
+type RespuestaBackend = { config: ConfigBackend | null };
+export interface ConfigBackend { url: string; apiKey: string; updatedAt?: number }
+
+/**
+ * Vuelve a pedir la configuracion del backend privado. La pantalla de Ajustes
+ * la llama cuando no la encuentra en cache: esta clave no tiene espejo local
+ * (contiene un token), asi que si la carga inicial fallo no hay de donde
+ * sacarla y sin esto los campos se quedan vacios para siempre.
+ */
+export async function recargarConfigBackend(): Promise<ConfigBackend | null> {
   try {
-    const { config } = await apiFetch<{ config: { url: string; apiKey: string } | null }>('/api/backend-config');
+    const { config } = await apiFetch<RespuestaBackend>('/api/backend-config');
     if (config) cache.set(CLAVE_BACKEND, { value: config, version: 0, dirty: false });
+    return config;
   } catch {
-    // Sin conexion se sigue con lo que hubiera en el espejo local.
+    return null;
   }
 }
 
