@@ -1,0 +1,8 @@
+# Los scripts de shell tienen que llevar saltos de linea de Unix. Si git los
+# convierte a CRLF al clonar en Windows, bash falla en Linux con un
+# "$'\r': command not found" que no dice nada a quien lo sufre.
+*.sh text eol=lf
+
+# Igual para lo que se ejecuta dentro de contenedores o servidores.
+*.service text eol=lf
+*.py text eol=lf

@@ -1,250 +1,274 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════════
-#  AURUM Backend — Deploy automático en Proxmox
-#  Ejecutar como root en el HOST de Proxmox (no dentro de un LXC):
+#  AURUM — backend en un contenedor de Proxmox
 #
-#    bash deploy-proxmox.sh
+#  Crea un LXC, instala el backend, lo deja como servicio y —si quieres
+#  usar AURUM desde el móvil— lo publica por https con Tailscale.
 #
-#  Hace TODO: descarga template, crea LXC, instala Python,
-#  copia el backend, configura Tailscale y servicio systemd.
+#  Ejecutar como root en el HOST de Proxmox:
+#
+#     bash deploy-proxmox.sh
+#
+#  Por qué https y no la IP de Tailscale a secas: AURUM se sirve por
+#  https, y un navegador no deja que una página https pida datos a una
+#  dirección http. Con `tailscale serve` el backend tiene certificado
+#  propio y el móvil puede hablar con él.
 # ═══════════════════════════════════════════════════════════════════
 
-set -e
+set -euo pipefail
 
-# ── Colores ──────────────────────────────────────────────────────
-G='\033[0;32m'; Y='\033[1;33m'; R='\033[0;31m'; B='\033[0;34m'; NC='\033[0m'
-ok()   { echo -e "${G}✓${NC} $1"; }
-info() { echo -e "${B}▶${NC} $1"; }
-warn() { echo -e "${Y}⚠${NC}  $1"; }
-err()  { echo -e "${R}✗${NC} $1"; exit 1; }
+G='\033[0;32m'; Y='\033[1;33m'; R='\033[0;31m'; B='\033[0;36m'; N='\033[0m'
+ok()    { echo -e "  ${G}OK${N}  $1"; }
+paso()  { echo -e "\n${B}▶${N} $1"; }
+aviso() { echo -e "  ${Y}!${N}   $1"; }
+muere() { echo -e "\n  ${R}X${N}   $1\n"; exit 1; }
 
 echo ""
-echo -e "${Y}═══════════════════════════════════════════════════════════════${NC}"
-echo -e "${Y}  AURUM Backend — Proxmox Deploy${NC}"
-echo -e "${Y}═══════════════════════════════════════════════════════════════${NC}"
+echo -e "${Y}  AURUM — backend en Proxmox${N}"
+echo   "  ─────────────────────────────"
+
+command -v pct >/dev/null 2>&1 || muere "Esto va en el HOST de Proxmox, no dentro de un contenedor."
+[ "$(id -u)" = 0 ] || muere "Hace falta ejecutarlo como root."
+
+ORIGEN="$(cd "$(dirname "$0")" && pwd)/backend"
+[ -d "$ORIGEN" ] || muere "No encuentro la carpeta backend/ junto a este script."
+
+# ── Lo que necesito saber ──────────────────────────────────────────
+paso "Configuración"
+
+# Proxmox comparte el espacio de IDs entre maquinas virtuales y contenedores,
+# asi que no basta con mirar `pct`: un id puede estar ocupado por una VM. Se le
+# pregunta al propio Proxmox cual es el siguiente libre.
+ocupado() { pct status "$1" >/dev/null 2>&1 || qm status "$1" >/dev/null 2>&1; }
+
+VMID=$(pvesh get /cluster/nextid 2>/dev/null || true)
+if [ -z "$VMID" ]; then
+    VMID=200
+    while ocupado "$VMID"; do VMID=$((VMID+1)); done
+fi
+read -rp "  ID del contenedor [$VMID]: " r; VMID="${r:-$VMID}"
+ocupado "$VMID" && muere "El ID $VMID ya lo usa una VM o un contenedor. Elige otro."
+
+ALMACENES=$(pvesm status --content rootdir 2>/dev/null | tail -n +2 | awk '{print $1}')
+[ -n "$ALMACENES" ] || muere "No hay almacenamiento para contenedores."
+ALMACEN=$(echo "$ALMACENES" | head -1)
+echo "  Almacenamientos: $(echo "$ALMACENES" | tr '\n' ' ')"
+read -rp "  Cuál uso [$ALMACEN]: " r; ALMACEN="${r:-$ALMACEN}"
+
+read -rp "  Memoria en MB [512]: " r; MEMORIA="${r:-512}"
+read -rp "  Puente de red [vmbr0]: " r; PUENTE="${r:-vmbr0}"
+read -rp "  Tu correo (el mismo con el que entras en AURUM): " CORREO
+[ -n "$CORREO" ] || muere "Hace falta el correo: es el dueño del backend."
+
 echo ""
+echo "  ¿Vas a usar AURUM desde el móvil o desde otro dispositivo?"
+echo "  Si contestas que sí, instalo Tailscale y publico el backend por https."
+echo "  Si no, quedará accesible solo dentro de tu red local."
+read -rp "  Instalar Tailscale [S/n]: " r
+CON_TAILSCALE=true
+case "${r:-s}" in [nN]*) CON_TAILSCALE=false;; esac
 
-# ── Verificar que estamos en Proxmox ─────────────────────────────
-command -v pct >/dev/null 2>&1 || err "Este script debe ejecutarse en el HOST de Proxmox (no dentro de un LXC)"
-
-# ── Configuración (edita si necesitas cambiar algo) ───────────────
-VMID=200
-HOSTNAME="aurum-backend"
-MEMORY=512
-CORES=1
-BRIDGE="vmbr0"
-TEMPLATE_NAME="debian-12-standard_12.7-1_amd64.tar.zst"
-BACKEND_DIR="/opt/aurum-backend"
-
-# Auto-detectar storage disponible para contenedores
-STORAGE=$(pvesm status --content rootdir 2>/dev/null | grep -v "^Name" | awk 'NR==1{print $1}')
-[ -z "$STORAGE" ] && STORAGE="local-lvm"
-info "Storage detectado: $STORAGE"
-
-# ── Verificar VMID libre ──────────────────────────────────────────
-if pct status $VMID &>/dev/null; then
-    warn "El contenedor $VMID ya existe."
-    read -p "  ¿Deseas eliminarlo y recrearlo? [s/N]: " CONFIRM
-    [[ "$CONFIRM" =~ ^[sS]$ ]] || err "Abortado. Cambia VMID en el script si quieres usar otro."
-    info "Eliminando contenedor $VMID..."
-    pct stop $VMID 2>/dev/null || true
-    pct destroy $VMID --purge
-    ok "Contenedor $VMID eliminado"
+CLAVE_TS=""
+if $CON_TAILSCALE; then
+    echo ""
+    echo "  Puedes pegar una clave de autenticación de Tailscale para que se"
+    echo "  conecte solo (la generas en login.tailscale.com → Settings → Keys)."
+    echo "  Si lo dejas en blanco, te daré un enlace para autorizarlo a mano."
+    read -rp "  Clave de Tailscale (opcional): " CLAVE_TS
 fi
 
-# ── Descargar template Debian 12 si no existe ─────────────────────
-info "Verificando template Debian 12..."
-if ! pveam list local 2>/dev/null | grep -q "$TEMPLATE_NAME"; then
-    info "Descargando Debian 12 template..."
-    pveam update
-    pveam download local "$TEMPLATE_NAME" || \
-        pveam download local "debian-12-standard_12.2-1_amd64.tar.zst" || \
-        err "No se pudo descargar el template. Descárgalo manualmente en Proxmox UI → local → CT Templates"
-    ok "Template descargado"
-else
-    ok "Template ya disponible"
+# ── Plantilla ──────────────────────────────────────────────────────
+paso "Plantilla de Debian"
+PLANTILLA=$(pveam list local 2>/dev/null | awk '/debian-12/{print $1}' | head -1 || true)
+if [ -z "$PLANTILLA" ]; then
+    pveam update >/dev/null 2>&1 || true
+    NOMBRE=$(pveam available --section system | awk '/debian-12-standard/{print $2}' | tail -1)
+    [ -n "$NOMBRE" ] || muere "No hay plantilla de Debian 12 disponible."
+    pveam download local "$NOMBRE" >/dev/null || muere "No se ha podido descargar la plantilla."
+    PLANTILLA=$(pveam list local | awk '/debian-12/{print $1}' | head -1)
 fi
+ok "$(basename "$PLANTILLA")"
 
-# Buscar el template exacto disponible
-TEMPLATE=$(pveam list local 2>/dev/null | grep "debian-12" | awk '{print $1}' | head -1)
-[ -z "$TEMPLATE" ] && err "No se encontró template Debian 12 en local storage"
-info "Usando template: $TEMPLATE"
-
-# ── Crear LXC ─────────────────────────────────────────────────────
-info "Creando contenedor LXC $VMID ($HOSTNAME)..."
-pct create $VMID "$TEMPLATE" \
-    --hostname   "$HOSTNAME" \
-    --memory     $MEMORY \
-    --cores      $CORES \
-    --rootfs     "${STORAGE}:4" \
-    --net0       "name=eth0,bridge=${BRIDGE},ip=dhcp,firewall=0" \
-    --unprivileged 1 \
-    --features   "nesting=1" \
-    --ostype     debian \
-    --start      0
+# ── Contenedor ─────────────────────────────────────────────────────
+paso "Creando el contenedor $VMID"
+pct create "$VMID" "$PLANTILLA" \
+    --hostname aurum-backend \
+    --memory "$MEMORIA" --cores 1 \
+    --rootfs "${ALMACEN}:4" \
+    --net0 "name=eth0,bridge=${PUENTE},ip=dhcp,firewall=0" \
+    --unprivileged 1 --features nesting=1 \
+    --ostype debian --onboot 1 --start 0 >/dev/null
 ok "Contenedor creado"
 
-# ── Arrancar LXC ─────────────────────────────────────────────────
-info "Arrancando contenedor..."
-pct start $VMID
-sleep 4  # esperar a que arranque la red
-
-# Esperar hasta que el LXC responda
-for i in $(seq 1 15); do
-    pct exec $VMID -- echo "ok" &>/dev/null && break
-    sleep 2
-done
-ok "Contenedor arrancado"
-
-# ── Sistema base ──────────────────────────────────────────────────
-info "Actualizando sistema base..."
-pct exec $VMID -- bash -c "
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update -qq
-    apt-get upgrade -y -qq
-    apt-get install -y -qq python3 python3-pip python3-venv curl wget git nano
-" && ok "Sistema actualizado"
-
-# ── Instalar Tailscale ────────────────────────────────────────────
-info "Instalando Tailscale..."
-pct exec $VMID -- bash -c "
-    curl -fsSL https://tailscale.com/install.sh | sh -s -- -q
-" && ok "Tailscale instalado"
-
-# ── Crear directorio de la app ────────────────────────────────────
-pct exec $VMID -- mkdir -p "$BACKEND_DIR"
-
-# ── Escribir archivos del backend ─────────────────────────────────
-info "Copiando archivos del backend..."
-
-# requirements.txt
-pct exec $VMID -- bash -c "cat > ${BACKEND_DIR}/requirements.txt << 'EOF'
-fastapi==0.115.5
-uvicorn[standard]==0.32.1
-websockets==13.1
-python-dotenv==1.0.1
-httpx==0.27.2
-EOF"
-
-# tr_client.py
-pct push $VMID "$(dirname "$0")/backend/tr_client.py" "${BACKEND_DIR}/tr_client.py" 2>/dev/null || \
-pct exec $VMID -- bash -c "curl -fsSL https://raw.githubusercontent.com/padilla585projects/AURUM/main/backend/tr_client.py -o ${BACKEND_DIR}/tr_client.py" 2>/dev/null || \
-warn "No se pudo copiar tr_client.py automáticamente — cópialo manualmente después"
-
-# main.py
-pct push $VMID "$(dirname "$0")/backend/main.py" "${BACKEND_DIR}/main.py" 2>/dev/null || \
-pct exec $VMID -- bash -c "curl -fsSL https://raw.githubusercontent.com/padilla585projects/AURUM/main/backend/main.py -o ${BACKEND_DIR}/main.py" 2>/dev/null || \
-warn "No se pudo copiar main.py automáticamente — cópialo manualmente después"
-
-ok "Archivos copiados"
-
-# ── Entorno virtual Python ────────────────────────────────────────
-info "Creando entorno virtual e instalando dependencias..."
-pct exec $VMID -- bash -c "
-    cd ${BACKEND_DIR}
-    python3 -m venv venv
-    source venv/bin/activate
-    pip install --quiet --upgrade pip
-    pip install --quiet -r requirements.txt
-" && ok "Dependencias instaladas"
-
-# ── Configurar .env ───────────────────────────────────────────────
-echo ""
-echo -e "${Y}─────────────────────────────────────────────────────────────${NC}"
-echo -e "${Y}  Configuración de AURUM Backend${NC}"
-echo -e "${Y}─────────────────────────────────────────────────────────────${NC}"
-echo ""
-
-read -p "  Genera una API key automática? [S/n]: " AUTO_KEY
-if [[ ! "$AUTO_KEY" =~ ^[nN]$ ]]; then
-    API_KEY=$(python3 -c "import secrets; print(secrets.token_hex(32))")
-    echo -e "  ${G}API Key generada:${NC} $API_KEY"
-    echo ""
-    echo -e "  ${Y}⚠ Cópiala ahora — la necesitarás en AURUM > Ajustes > Backend${NC}"
-    echo ""
-else
-    read -p "  Introduce tu API Key: " API_KEY
+if $CON_TAILSCALE; then
+    # Tailscale necesita /dev/net/tun, que un contenedor sin privilegios no
+    # tiene por defecto. Sin esto, la VPN no levanta.
+    cat >> "/etc/pve/lxc/${VMID}.conf" <<'EOF'
+lxc.cgroup2.devices.allow: c 10:200 rwm
+lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file
+EOF
+    ok "Acceso a /dev/net/tun concedido"
 fi
 
-read -p "  Teléfono Trade Republic (ej: +34612345678): " TR_PHONE
-read -s -p "  PIN Trade Republic (4 dígitos): " TR_PIN
-echo ""
+pct start "$VMID" >/dev/null
+for _ in $(seq 1 20); do pct exec "$VMID" -- true >/dev/null 2>&1 && break; sleep 2; done
+pct exec "$VMID" -- true >/dev/null 2>&1 || muere "El contenedor no arranca."
+ok "Contenedor en marcha"
 
-pct exec $VMID -- bash -c "cat > ${BACKEND_DIR}/.env << EOF
-AURUM_API_KEY=${API_KEY}
-TR_PHONE=${TR_PHONE}
-TR_PIN=${TR_PIN}
+# ── Sistema base ───────────────────────────────────────────────────
+paso "Instalando lo necesario (tarda un par de minutos)"
+pct exec "$VMID" -- bash -c "
+    export DEBIAN_FRONTEND=noninteractive LC_ALL=C LANG=C
+    apt-get update -qq
+    apt-get install -y -qq python3 python3-venv python3-pip curl ca-certificates >/dev/null
+" || muere "Fallo instalando paquetes base."
+ok "Sistema preparado"
+
+# ── Copiar el backend entero ───────────────────────────────────────
+# Se copia la carpeta completa: el backend son varios modulos que se
+# importan entre si, y copiar solo unos cuantos lo deja sin arrancar.
+paso "Copiando el backend"
+DESTINO=/opt/aurum-backend
+pct exec "$VMID" -- mkdir -p "$DESTINO"
+PAQUETE=$(mktemp /tmp/aurum-XXXXXX.tar.gz)
+# --owner/--group a 0: si el paquete se hace en Windows lleva un uid que no
+# existe en Linux, y un contenedor sin privilegios no puede aplicarlo.
+tar -czf "$PAQUETE" -C "$ORIGEN" --owner=0 --group=0 --numeric-owner \
+    --exclude='.venv' --exclude='__pycache__' --exclude='.pytest_cache' \
+    --exclude='.env' \
+    --exclude='aurum.db*' --exclude='tests' .
+pct push "$VMID" "$PAQUETE" /tmp/aurum.tar.gz >/dev/null
+pct exec "$VMID" -- tar -xzf /tmp/aurum.tar.gz -C "$DESTINO" --no-same-owner
+pct exec "$VMID" -- rm -f /tmp/aurum.tar.gz
+rm -f "$PAQUETE"
+ok "Copiado en $DESTINO"
+
+paso "Instalando dependencias de Python"
+pct exec "$VMID" -- bash -c "
+    cd $DESTINO
+    python3 -m venv venv
+    ./venv/bin/pip install --quiet --upgrade pip
+    ./venv/bin/pip install --quiet -r requirements.txt
+" || muere "Fallo instalando dependencias de Python."
+ok "Dependencias instaladas"
+
+# ── Configuración ──────────────────────────────────────────────────
+paso "Generando la configuración"
+CLAVE_ARRANQUE=$(pct exec "$VMID" -- python3 -c 'import secrets; print(secrets.token_hex(32))')
+CLAVE_CIFRADO=$(pct exec "$VMID" -- python3 -c 'import os,base64; print(base64.b64encode(os.urandom(32)).decode())')
+
+pct exec "$VMID" -- bash -c "cat > $DESTINO/.env <<EOF
+# Generado por deploy-proxmox.sh. Contiene tus claves: no lo compartas.
+AURUM_API_KEY=${CLAVE_ARRANQUE}
+AURUM_SECRET_KEY=${CLAVE_CIFRADO}
+AURUM_OWNER_EMAIL=${CORREO}
+AURUM_DB_PATH=${DESTINO}/aurum.db
+AURUM_ALLOWED_ORIGINS=https://aurum-7cm.pages.dev,capacitor://localhost
+
+# Desactivado a proposito: AURUM lee tu cartera y propone, pero no manda
+# ninguna orden al broker mientras esto sea false.
+AURUM_TRADING_ENABLED=false
+AURUM_MAX_DAILY_EUR=1000
+
+# Se rellenan desde la propia aplicacion, en Ajustes.
+TR_PHONE=
+TR_PIN=
+ANTHROPIC_API_KEY=
+TELEGRAM_TOKEN=
+TELEGRAM_CHAT_ID=
 EOF"
-pct exec $VMID -- chmod 600 "${BACKEND_DIR}/.env"
-ok ".env configurado"
+pct exec "$VMID" -- chmod 600 "$DESTINO/.env"
+ok "Configuración creada"
 
-# ── Servicio systemd ──────────────────────────────────────────────
-info "Configurando servicio systemd..."
-pct exec $VMID -- bash -c "cat > /etc/systemd/system/aurum-backend.service << 'EOF'
+# ── Servicio ───────────────────────────────────────────────────────
+paso "Dejándolo como servicio"
+pct exec "$VMID" -- bash -c "cat > /etc/systemd/system/aurum-backend.service <<'EOF'
 [Unit]
-Description=AURUM Backend — Trade Republic Executor
-After=network.target tailscaled.service
-Wants=tailscaled.service
+Description=AURUM — backend privado
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
 WorkingDirectory=/opt/aurum-backend
-EnvironmentFile=/opt/aurum-backend/.env
-ExecStart=/opt/aurum-backend/venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000
+ExecStart=/opt/aurum-backend/venv/bin/python main.py
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF"
+pct exec "$VMID" -- systemctl daemon-reload
+pct exec "$VMID" -- systemctl enable --now aurum-backend >/dev/null 2>&1
 
-pct exec $VMID -- bash -c "
-    systemctl daemon-reload
-    systemctl enable aurum-backend
-    systemctl start aurum-backend
-" && ok "Servicio aurum-backend activo"
+listo=false
+for _ in $(seq 1 20); do
+    if pct exec "$VMID" -- curl -sf --max-time 3 http://127.0.0.1:8000/health >/dev/null 2>&1; then listo=true; break; fi
+    sleep 2
+done
+$listo || muere "El backend no responde. Mira: pct exec $VMID -- journalctl -u aurum-backend -n 40"
+ok "Arranca solo al encender el contenedor"
 
-# ── Conectar Tailscale ────────────────────────────────────────────
-echo ""
-echo -e "${Y}─────────────────────────────────────────────────────────────${NC}"
-echo -e "${Y}  Conectar Tailscale${NC}"
-echo -e "${Y}─────────────────────────────────────────────────────────────${NC}"
-echo ""
-info "Iniciando Tailscale (se abrirá un enlace para autenticar)..."
-echo ""
-pct exec $VMID -- tailscale up --accept-routes 2>&1 | grep -E "(https://|To authenticate)" || true
-echo ""
-echo -e "  ${Y}Abre el enlace de arriba en tu navegador para conectar Tailscale.${NC}"
-echo -e "  ${Y}Después pulsa ENTER para continuar...${NC}"
-read -p "  "
+# ── Tailscale ──────────────────────────────────────────────────────
+DIRECCION=""
+if $CON_TAILSCALE; then
+    paso "Conectando Tailscale"
+    pct exec "$VMID" -- bash -c "curl -fsSL https://tailscale.com/install.sh | sh -s -- -q >/dev/null 2>&1"
+    pct exec "$VMID" -- systemctl enable --now tailscaled >/dev/null 2>&1
+    sleep 3
 
-# Obtener IP de Tailscale
-TS_IP=$(pct exec $VMID -- tailscale ip -4 2>/dev/null || echo "")
+    if [ -n "$CLAVE_TS" ]; then
+        pct exec "$VMID" -- tailscale up --authkey "$CLAVE_TS" --hostname aurum-backend >/dev/null 2>&1 \
+            || aviso "La clave no ha servido; habrá que autorizarlo a mano."
+    else
+        echo ""
+        echo "  Abre este enlace y autoriza el equipo:"
+        pct exec "$VMID" -- tailscale up --hostname aurum-backend 2>&1 | grep -o 'https://login[^ ]*' || true
+        echo ""
+        read -rp "  Pulsa ENTER cuando lo hayas autorizado… "
+    fi
 
-# ── Test final ────────────────────────────────────────────────────
-echo ""
-info "Verificando que el backend responde..."
-sleep 2
-HEALTH=$(pct exec $VMID -- curl -s http://localhost:8000/health 2>/dev/null || echo "{}")
-ok "Backend OK: $HEALTH"
+    if pct exec "$VMID" -- tailscale status >/dev/null 2>&1; then
+        # Esto es lo que hace que funcione desde el movil: certificado propio
+        # y https, en vez de la IP de Tailscale por http.
+        pct exec "$VMID" -- tailscale serve --bg --https=443 http://127.0.0.1:8000 >/dev/null 2>&1 \
+            || aviso "No se ha podido publicar por https. ¿Tienes activados los certificados HTTPS en login.tailscale.com → DNS?"
+        DOMINIO=$(pct exec "$VMID" -- tailscale status --json 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))' 2>/dev/null || true)
+        [ -n "$DOMINIO" ] && DIRECCION="https://$DOMINIO"
+        ok "Publicado en ${DIRECCION:-la tailnet}"
+    else
+        aviso "Tailscale no ha quedado conectado. Puedes hacerlo después con: pct exec $VMID -- tailscale up"
+    fi
+fi
 
-# ── Resumen ───────────────────────────────────────────────────────
+[ -n "$DIRECCION" ] || DIRECCION="http://$(pct exec "$VMID" -- hostname -I | awk '{print $1}'):8000"
+
+# ── Token ──────────────────────────────────────────────────────────
+paso "Creando tu token de acceso"
+RESPUESTA=$(pct exec "$VMID" -- curl -s -X POST http://127.0.0.1:8000/admin/tokens \
+    -H "X-AURUM-KEY: ${CLAVE_ARRANQUE}" -H 'Content-Type: application/json' \
+    -d "{\"user_email\":\"${CORREO}\",\"role\":\"owner\",\"scopes\":[\"read\",\"execute\",\"admin\"]}" || true)
+TOKEN=$(printf '%s' "$RESPUESTA" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("token",""))' 2>/dev/null || true)
+[ -n "$TOKEN" ] && ok "Token creado" || aviso "No se ha podido crear el token: $RESPUESTA"
+
+# ── Resumen ────────────────────────────────────────────────────────
 echo ""
-echo -e "${G}═══════════════════════════════════════════════════════════════${NC}"
-echo -e "${G}  ✓ AURUM Backend instalado y corriendo${NC}"
-echo -e "${G}═══════════════════════════════════════════════════════════════${NC}"
+echo -e "${G}  ══════════════════════════════════════════════${N}"
+echo -e "${G}   Listo. Abre AURUM → Ajustes → Backend${N}"
+echo -e "${G}  ══════════════════════════════════════════════${N}"
 echo ""
-echo -e "  ${B}IP Tailscale:${NC}  ${TS_IP:-"ejecuta: pct exec $VMID -- tailscale ip -4"}"
-echo -e "  ${B}API Key:${NC}       $API_KEY"
-echo -e "  ${B}Backend URL:${NC}   http://${TS_IP:-"<IP-TAILSCALE>"}:8000"
+echo -e "   Dirección:  ${B}${DIRECCION}${N}"
+[ -n "$TOKEN" ] && echo -e "   Token:      ${B}${TOKEN}${N}"
 echo ""
-echo -e "  ${Y}En AURUM → Ajustes → Backend Proxmox:${NC}"
-echo -e "    URL:      http://${TS_IP:-"<IP-TAILSCALE>"}:8000"
-echo -e "    API Key:  $API_KEY"
+[ -n "$TOKEN" ] && echo -e "   ${Y}Copia el token ahora: no se puede volver a mostrar.${N}\n"
+if ! $CON_TAILSCALE; then
+    echo -e "   ${Y}Sin Tailscale, esa dirección es http y solo funciona dentro de tu${N}"
+    echo -e "   ${Y}red local. Desde el móvil el navegador la bloqueará.${N}\n"
+fi
+echo "   Órdenes de compra y venta: desactivadas. Para activarlas, edita"
+echo "   AURUM_TRADING_ENABLED en ${DESTINO}/.env dentro del contenedor."
 echo ""
-echo -e "  ${Y}Comandos útiles dentro del LXC:${NC}"
-echo -e "    pct exec $VMID -- systemctl status aurum-backend"
-echo -e "    pct exec $VMID -- journalctl -u aurum-backend -f"
-echo -e "    pct exec $VMID -- curl http://localhost:8000/health"
+echo "   Comandos útiles:"
+echo "     pct exec $VMID -- systemctl status aurum-backend"
+echo "     pct exec $VMID -- journalctl -u aurum-backend -f"
 echo ""
