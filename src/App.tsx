@@ -690,7 +690,7 @@ async function parsePortfolioWithAI(
   const raw = await callAnthropic(
     [{ role:'user', content }],
     IMPORT_SYSTEM,
-    'claude-sonnet-4-6',
+    'claude-sonnet-5',
     undefined, 512, false, // import: no web search, max 512 tokens
   );
   const json = raw.replace(/```[a-z]*\n?|```/g, '').trim();
@@ -1841,15 +1841,15 @@ function ResearchTab({ portfolio, profile }: { portfolio: Position[]; profile: s
 
     try {
       const [bull, bear] = await Promise.all([
-        callAnthropic([{ role: 'user', content: bullPrompt }], 'Eres un experto analista financiero alcista. Responde en español.', 'claude-sonnet-4-6', undefined, 1024, false),
-        callAnthropic([{ role: 'user', content: bearPrompt }], 'Eres un experto analista financiero bajista. Responde en español.', 'claude-sonnet-4-6', undefined, 1024, false),
+        callAnthropic([{ role: 'user', content: bullPrompt }], 'Eres un experto analista financiero alcista. Responde en español.', 'claude-sonnet-5', undefined, 1024, false),
+        callAnthropic([{ role: 'user', content: bearPrompt }], 'Eres un experto analista financiero bajista. Responde en español.', 'claude-sonnet-5', undefined, 1024, false),
       ]);
       setDebateBull(bull);
       setDebateBear(bear);
 
       // Veredicto final
       const verdPrompt = `Has leído dos análisis opuestos sobre "${debateAsset}":\n\n**TORO (alcista):**\n${bull}\n\n**OSO (bajista):**\n${bear}\n\nComo árbitro independiente, da un VEREDICTO FINAL equilibrado: resume los 2 mejores argumentos de cada lado, y concluye con una recomendación práctica para un inversor de perfil "${profile}". Máximo 3 párrafos.`;
-      const verd = await callAnthropic([{ role: 'user', content: verdPrompt }], 'Eres AURUM, árbitro financiero imparcial. Responde en español.', 'claude-sonnet-4-6', undefined, 768, false);
+      const verd = await callAnthropic([{ role: 'user', content: verdPrompt }], 'Eres AURUM, árbitro financiero imparcial. Responde en español.', 'claude-sonnet-5', undefined, 768, false);
       setDebateVeredicto(verd);
     } catch(e:any) {
       setDebateBull(`⚠️ Error: ${e.message}`);
@@ -1889,7 +1889,7 @@ Estructura la carta en: (1) Rendimiento del mes en contexto, (2) Reflexión sobr
       const result = await callAnthropic(
         [{ role: 'user', content: prompt }],
         'Eres el gestor de un fondo de inversión boutique. Escribes cartas mensuales a tus inversores con sabiduría, honestidad y visión a largo plazo.',
-        'claude-sonnet-4-6',
+        'claude-sonnet-5',
         undefined, 1536, false, // carta: sin web search (usa datos del portfolio ya en el prompt)
       );
       setCarta(result);
@@ -2007,7 +2007,7 @@ Estructura la carta en: (1) Rendimiento del mes en contexto, (2) Reflexión sobr
                   <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.22em', fontWeight:600, color:C.goldL }}>Informe de Inversión — {asset}</div>
                   <div style={{ fontSize:'.68em', color:C.muted, fontFamily:"'DM Mono',monospace", marginTop:2, display:'flex', gap:8, alignItems:'center' }}>
                     {new Date().toLocaleDateString('es-ES',{weekday:'long',year:'numeric',month:'long',day:'numeric'})}
-                    <ProviderBadge provider="anthropic" model="claude-sonnet-4-6" />
+                    <ProviderBadge provider="anthropic" model="claude-sonnet-5" />
                   </div>
                 </div>
               </div>
@@ -2723,7 +2723,7 @@ function InvestTab({ profile, portfolio, setPortfolio, userProfile, onNavigate }
                   <div style={{ fontSize:'.88em', fontWeight:600, color:C.goldL }}>Plan de inversión · {proposal.totalAmount.toLocaleString('es-ES')}€</div>
                   <div style={{ fontSize:'.65em', color:C.muted, marginTop:2 }}>{proposal.trades.length} instrumentos · {new Date(proposal.generatedAt).toLocaleTimeString('es-ES', { hour:'2-digit', minute:'2-digit' })}</div>
                 </div>
-                <ProviderBadge provider="anthropic" model="claude-sonnet-4-6" />
+                <ProviderBadge provider="anthropic" model="claude-sonnet-5" />
               </div>
               {proposal.trades.map((t, i) => <TradeRow key={i} trade={t} />)}
               <div style={{ padding:'12px 16px', background:'#07070e', borderTop:`1px solid ${C.border}` }}>
@@ -3763,10 +3763,10 @@ function SettingsTab({ profile, setProfile, userProfile, setUserProfile }:{
           <div style={{ fontSize:'.74em', color:C.muted, marginBottom:14 }}>Cada agente usa el modelo óptimo para su tarea.</div>
           <div style={{ background:C.surf2, border:`1px solid ${C.border}`, borderRadius:13, overflow:'hidden' }}>
             {([
-              ['◈ AURUM',  'Asesor general',      'anthropic', 'claude-sonnet-4-6',      'Mejor calidad conversacional + búsqueda web'],
+              ['◈ AURUM',  'Asesor general',      'anthropic', 'claude-sonnet-5',      'Mejor calidad conversacional + búsqueda web'],
               ['🌐 MACRO', 'Análisis macro',       'openai',    'gpt-4o-search-preview',  'Datos macroeconómicos en tiempo real'],
               ['⚖️ RIESGO','Gestión de riesgos',   'deepseek',  'deepseek-reasoner (R1)', 'Razonamiento matemático profundo (VaR, Sharpe)'],
-              ['🧾 FISCAL','Asesoría fiscal',       'anthropic', 'claude-sonnet-4-6',      'Interpretación de normativa fiscal española'],
+              ['🧾 FISCAL','Asesoría fiscal',       'anthropic', 'claude-sonnet-5',      'Interpretación de normativa fiscal española'],
             ] as [string,string,string,string,string][]).map(([agent, role, prov, model, desc]) => {
               const pm = PROVIDER_META[prov as keyof typeof PROVIDER_META];
               return (

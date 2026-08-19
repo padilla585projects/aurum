@@ -75,17 +75,17 @@ MAX_DAILY_EUR = float(os.getenv("AURUM_MAX_DAILY_EUR", "1000"))
 # ── Claude helper ────────────────────────────────────────────────────────────
 
 async def _call_claude(system: str, user: str, max_tokens: int = 1024, web_search: bool = True) -> str:
-    """Llama a Claude claude-sonnet-4-6 con búsqueda web opcional."""
+    """Llama a Claude claude-sonnet-5 con búsqueda web opcional."""
     if not ANTHROPIC_KEY:
         raise ValueError("ANTHROPIC_API_KEY no configurada")
     body: dict = {
-        "model":      "claude-sonnet-4-6",
+        "model":      "claude-sonnet-5",
         "max_tokens": max_tokens,
         "system":     system,
         "messages":   [{"role": "user", "content": user}],
     }
     if web_search:
-        body["tools"] = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}]
+        body["tools"] = [{"type": "web_search_20260209", "name": "web_search", "max_uses": 3}]
 
     headers = {
         "x-api-key":         ANTHROPIC_KEY,
@@ -1487,7 +1487,7 @@ Responde SOLO con JSON indicando la próxima acción:
                 r = await hc.post(
                     "https://api.anthropic.com/v1/messages",
                     headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "Content-Type": "application/json"},
-                    json={"model": "claude-sonnet-4-6", "max_tokens": 256, "system": _AGENT_VISION_SYSTEM, "messages": messages},
+                    json={"model": "claude-sonnet-5", "max_tokens": 256, "system": _AGENT_VISION_SYSTEM, "messages": messages},
                 )
                 r.raise_for_status()
                 data = r.json()

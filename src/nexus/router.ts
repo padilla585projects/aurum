@@ -6,10 +6,10 @@ import type { AgentKey, ResearchTask, RouteResult } from './types';
 // - RIESGO           → DeepSeek-R1: deep math reasoning (VaR, Sharpe, Kelly)
 // - FISCAL           → Claude: nuanced Spanish tax law interpretation
 const AGENT_ROUTES: Record<AgentKey, RouteResult> = {
-  aurum:  { provider: 'anthropic', model: 'claude-sonnet-4-6' },
+  aurum:  { provider: 'anthropic', model: 'claude-sonnet-5' },
   macro:  { provider: 'openai',    model: 'gpt-4o-search-preview'   },
   riesgo: { provider: 'deepseek',  model: 'deepseek-reasoner'        },
-  fiscal: { provider: 'anthropic', model: 'claude-sonnet-4-6' },
+  fiscal: { provider: 'anthropic', model: 'claude-sonnet-5' },
 };
 
 // Research pipeline: web-search steps via OpenAI, risk reasoning via DeepSeek, synthesis via Claude
@@ -19,7 +19,7 @@ const TASK_ROUTES: Record<ResearchTask, RouteResult> = {
   analysts:   { provider: 'openai',    model: 'gpt-4o-search-preview'   },
   macro:      { provider: 'openai',    model: 'gpt-4o-search-preview'   },
   risks:      { provider: 'deepseek',  model: 'deepseek-chat'            },
-  synthesis:  { provider: 'anthropic', model: 'claude-sonnet-4-6' },
+  synthesis:  { provider: 'anthropic', model: 'claude-sonnet-5' },
   prices:     { provider: 'openai',    model: 'gpt-4o-search-preview'   },
 };
 

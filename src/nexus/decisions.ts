@@ -153,7 +153,7 @@ Responde EXCLUSIVAMENTE con este JSON (sin texto adicional, sin backticks):
   const raw = await callAnthropic(
     [{ role: 'user', content: `Analiza el mercado y toma la decisión óptima para ${budget}€.` }],
     system,
-    'claude-sonnet-4-6',
+    'claude-sonnet-5',
     undefined,
     1024,
     true,

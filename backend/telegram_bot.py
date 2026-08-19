@@ -52,7 +52,7 @@ def _allowed(update: Update) -> bool:
 
 async def _claude(system: str, user: str, max_tokens: int = 800) -> str:
     """
-    Llama a Claude claude-sonnet-4-6 con búsqueda web.
+    Llama a Claude claude-sonnet-5 con búsqueda web.
     Maneja el loop tool_use → tool_result hasta end_turn (máx. 8 iteraciones).
     """
     if not ANTHROPIC_KEY:
@@ -64,10 +64,10 @@ async def _claude(system: str, user: str, max_tokens: int = 800) -> str:
         "Content-Type":      "application/json",
     }
     body: dict = {
-        "model":      "claude-sonnet-4-6",
+        "model":      "claude-sonnet-5",
         "max_tokens": max_tokens,
         "system":     system,
-        "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}],
+        "tools": [{"type": "web_search_20260209", "name": "web_search", "max_uses": 3}],
         "messages": [{"role": "user", "content": user}],
     }
 

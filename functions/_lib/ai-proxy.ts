@@ -14,7 +14,9 @@ import { fail } from './http.ts';
 
 /** Modelos que AURUM usa de verdad (ver src/nexus/router.ts). */
 export const ALLOWED_MODELS: Record<string, string[]> = {
-  anthropic: ['claude-sonnet-4-6', 'claude-opus-4-6', 'claude-haiku-4-5'],
+  // Sonnet 4.6 se mantiene durante la transicion: una pestaña abierta desde
+  // antes del despliegue sigue pidiendolo hasta que se recargue.
+  anthropic: ['claude-sonnet-5', 'claude-opus-5', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
   openai: ['gpt-4o-search-preview', 'gpt-4o', 'gpt-4o-mini'],
   deepseek: ['deepseek-chat', 'deepseek-reasoner'],
 };

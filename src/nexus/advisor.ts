@@ -98,7 +98,7 @@ export async function nexusInvestmentProposal(
   const raw = await callAnthropic(
     [{ role: 'user', content: `Analiza los mercados ahora y genera el plan de inversión para ${capital}€.` }],
     system,
-    'claude-sonnet-4-6',
+    'claude-sonnet-5',
     undefined,
     2048,
     true,

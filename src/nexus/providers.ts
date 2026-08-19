@@ -69,7 +69,7 @@ export async function callAnthropic(
       messages: cur,
     };
     if (useWebSearch) {
-      body['tools'] = [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }];
+      body['tools'] = [{ type: 'web_search_20260209', name: 'web_search', max_uses: 3 }];
     }
 
     const res = await fetch(urls.anthropic, { method: 'POST', headers, body: JSON.stringify(body) });

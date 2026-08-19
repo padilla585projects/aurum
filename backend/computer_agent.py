@@ -101,7 +101,7 @@ class ComputerAgent:
                     "Content-Type":      "application/json",
                 },
                 json={
-                    "model":      "claude-sonnet-4-6",
+                    "model":      "claude-sonnet-5",
                     "max_tokens": 512,
                     "system":     _VISION_SYSTEM,
                     "messages":   messages,
