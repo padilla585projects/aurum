@@ -46,6 +46,7 @@ function limitsFor(path: string, method: string): string[] {
   // no de un proveedor concreto.
   if (AI_ROUTES.has(path)) return [`ai:${path.slice('/api/'.length)}`, 'ai:daily'];
   if (path === '/api/keys') return [method === 'GET' ? 'state:read' : 'keys:write'];
+  if (path === '/api/models') return ['state:read'];
   if (path === '/api/market') return ['market'];
   if (path.startsWith('/api/state')) return [method === 'GET' ? 'state:read' : 'state:write'];
   return [];

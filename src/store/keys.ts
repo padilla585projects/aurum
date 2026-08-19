@@ -47,3 +47,31 @@ export async function saveProviderKey(provider: string, key: string, model?: str
 export async function deleteProviderKey(provider: string): Promise<void> {
   await apiFetch(`/api/keys?provider=${encodeURIComponent(provider)}`, { method: 'DELETE' });
 }
+
+/** Valor que se guarda para que AURUM elija el modelo en cada llamada. */
+export const MODELO_AUTOMATICO = 'auto';
+
+export interface ModeloDisponible {
+  id: string;
+  nombre: string;
+  entrada: number | null;
+  salida: number | null;
+  contexto: number | null;
+  gratuito: boolean;
+}
+
+export interface CatalogoModelos {
+  models: ModeloDisponible[];
+  /** A que resuelve «Auto» ahora mismo, para poder enseñarlo. */
+  auto: { id: string; salida: number | null } | null;
+  autoDisponible: boolean;
+}
+
+/**
+ * Catalogo en vivo del proveedor. Se consulta al proveedor en cada carga en vez
+ * de mantener una lista en el codigo: estos catalogos cambian solos, y los
+ * modelos gratuitos de OpenRouter aparecen y desaparecen.
+ */
+export async function fetchModelos(provider: string): Promise<CatalogoModelos> {
+  return apiFetch<CatalogoModelos>(`/api/models?provider=${encodeURIComponent(provider)}`);
+}

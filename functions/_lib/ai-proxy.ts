@@ -86,6 +86,13 @@ export const PROVIDERS: Record<Provider, ProviderConfig> = {
 
 export const PROVIDER_IDS = Object.keys(PROVIDERS) as Provider[];
 
+/**
+ * Valor que guarda el usuario cuando quiere que AURUM elija por el. Se resuelve
+ * en cada peticion contra el catalogo del proveedor, asi que no envejece: si un
+ * modelo desaparece o entra otro mas barato, la siguiente llamada ya lo usa.
+ */
+export const MODELO_AUTOMATICO = 'auto';
+
 export function isProvider(value: unknown): value is Provider {
   return typeof value === 'string' && (PROVIDER_IDS as string[]).includes(value);
 }
@@ -244,6 +251,20 @@ export async function recordUsage(
 
 /* ── Manejador común ─────────────────────────────────────────── */
 
+/**
+ * Resuelve «Auto». Vive aparte para que el catalogo se consulte solo cuando de
+ * verdad hace falta, y no en cada peticion con modelo fijo.
+ */
+async function resolverAutomatico(env: Env, user: SessionUser, provider: Provider): Promise<string | null> {
+  try {
+    const { elegirAutomatico, listarModelos } = await import('../api/models.ts');
+    const modelos = await listarModelos(env, user, provider);
+    return modelos ? (elegirAutomatico(modelos)?.id ?? null) : null;
+  } catch {
+    return null;
+  }
+}
+
 interface ProxyContext {
   request: Request;
   env: Env;
@@ -283,7 +304,21 @@ export async function proxyToProvider(context: ProxyContext, provider: Provider)
     );
   }
 
-  const validated = await validateBody(request, provider, credentials);
+  // «Auto»: se elige el mas barato del catalogo en el momento de llamar.
+  let credencialesFinales = credentials;
+  if (credentials.model === MODELO_AUTOMATICO) {
+    const elegido = await resolverAutomatico(env, user, provider);
+    if (!elegido) {
+      return fail(
+        503,
+        'auto_unavailable',
+        `No se ha podido elegir modelo automaticamente en ${config.label}.`,
+      );
+    }
+    credencialesFinales = { ...credentials, model: elegido };
+  }
+
+  const validated = await validateBody(request, provider, credencialesFinales);
   if (validated instanceof Response) return validated;
 
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };

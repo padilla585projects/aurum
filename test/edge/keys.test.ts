@@ -10,6 +10,7 @@ import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { decryptSecret, encryptSecret, keyHint } from '../../functions/_lib/secrets.ts';
 import { PROVIDERS, validateBody, type Credentials } from '../../functions/_lib/ai-proxy.ts';
+import { elegirAutomatico } from '../../functions/api/models.ts';
 import { dispatch, seedLoggedIn } from './helpers.ts';
 
 const CLAVE = 'sk-secreta-de-prueba-1234567890';
@@ -160,6 +161,32 @@ describe('/api/keys', () => {
     const res = await dispatch('/api/keys', { bearer: token });
     const providers = (await res.json<{ providers: { id: string; hasOwnKey: boolean }[] }>()).providers;
     expect(providers.find(p => p.id === 'gemini')!.hasOwnKey).toBe(false);
+  });
+});
+
+describe('eleccion automatica de modelo', () => {
+  const catalogo = [
+    { id: 'caro/grande',   nombre: 'caro',   entrada: 10, salida: 30,  contexto: 200_000, gratuito: false },
+    { id: 'gratis/corto',  nombre: 'corto',  entrada: 0,  salida: 0,   contexto: 8_000,   gratuito: true  },
+    { id: 'gratis/amplio', nombre: 'amplio', entrada: 0,  salida: 0,   contexto: 128_000, gratuito: true  },
+    { id: 'sin-precio',    nombre: 'opaco',  entrada: null, salida: null, contexto: 500_000, gratuito: false },
+  ];
+
+  it('elige el mas barato con contexto suficiente', () => {
+    expect(elegirAutomatico(catalogo)!.id).toBe('gratis/amplio');
+  });
+
+  it('descarta los que no llegan al contexto minimo aunque sean gratis', () => {
+    const soloCorto = catalogo.filter(m => m.id !== 'gratis/amplio');
+    expect(elegirAutomatico(soloCorto)!.id).toBe('caro/grande');
+  });
+
+  it('sin precios publicados no elige nada, en vez de adivinar', () => {
+    expect(elegirAutomatico([catalogo[3]])).toBeNull();
+  });
+
+  it('sin catalogo no elige nada', () => {
+    expect(elegirAutomatico([])).toBeNull();
   });
 });
 

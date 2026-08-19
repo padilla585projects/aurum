@@ -37,7 +37,8 @@ import { C, PIE_PAL } from './theme';
 import { useSession } from './store/session-context';
 import { createInvite } from './store/session';
 import { ApiError } from './store/api';
-import { deleteProviderKey, fetchProviderKeys, saveProviderKey, type ProviderKeyStatus } from './store/keys';
+import { MODELO_AUTOMATICO, deleteProviderKey, fetchModelos, fetchProviderKeys, saveProviderKey,
+         type CatalogoModelos, type ProviderKeyStatus } from './store/keys';
 
 /* ══════════════════════════════════════════════════════════════
    BOOTSTRAP
@@ -3699,6 +3700,7 @@ function AccountSection() {
 function ProviderKeysSection() {
   const [providers, setProviders] = useState<ProviderKeyStatus[]>([]);
   const [borrador, setBorrador]   = useState<Record<string, { key:string; model:string }>>({});
+  const [catalogos, setCatalogos] = useState<Record<string, CatalogoModelos|undefined>>({});
   const [ocupado, setOcupado]     = useState<string|null>(null);
   const [error, setError]         = useState<string|null>(null);
   const [aviso, setAviso]         = useState<string|null>(null);
@@ -3707,6 +3709,22 @@ function ProviderKeysSection() {
   useEffect(recargar, []);
 
   const campo = (id:string) => borrador[id] ?? { key:'', model:'' };
+
+  /** El catalogo se pide al abrir el desplegable, no al cargar la pantalla:
+   *  son seis llamadas a proveedores externos que casi nunca hacen falta. */
+  const cargarCatalogo = (id:string) => {
+    if (catalogos[id] !== undefined) return;
+    fetchModelos(id)
+      .then(c => setCatalogos(prev => ({ ...prev, [id]: c })))
+      .catch(() => setError(`No se ha podido leer el catálogo de modelos. Comprueba que la clave sea válida.`));
+  };
+
+  /** true si el modelo guardado ya no aparece en el catálogo del proveedor. */
+  const caducado = (p:ProviderKeyStatus) => {
+    const cat = catalogos[p.id];
+    if (!cat || !p.model || p.model === MODELO_AUTOMATICO) return false;
+    return !cat.models.some(m => m.id === p.model);
+  };
   const editar = (id:string, parche:Partial<{key:string;model:string}>) =>
     setBorrador(b => ({ ...b, [id]: { ...campo(id), ...parche } }));
 
@@ -3760,7 +3778,14 @@ function ProviderKeysSection() {
             </div>
 
             {p.hasOwnKey && p.model && (
-              <div style={{ fontSize:'.68em', color:C.muted, marginBottom:8 }}>Modelo: {p.model}</div>
+              <div style={{ fontSize:'.68em', color:C.muted, marginBottom:8 }}>
+                Modelo: {p.model === MODELO_AUTOMATICO ? 'Auto — el más barato' : p.model}
+                {/* Un modelo retirado por el proveedor falla en el momento de
+                    usarlo; avisar aqui evita descubrirlo a mitad de una consulta. */}
+                {caducado(p) && (
+                  <span style={{ color:C.red }}> · ya no está en el catálogo</span>
+                )}
+              </div>
             )}
 
             <div style={{ display:'flex', gap:7, flexWrap:'wrap' }}>
@@ -3772,12 +3797,24 @@ function ProviderKeysSection() {
                 autoComplete="off"
                 style={{ ...inputBase, flex:'2 1 190px', width:'auto' }}
               />
-              <input
-                value={campo(p.id).model}
+              <select
+                value={campo(p.id).model || p.model || ''}
                 onChange={e => editar(p.id, { model:e.target.value })}
-                placeholder={p.model || 'Modelo (opcional)'}
-                style={{ ...inputBase, flex:'1 1 130px', width:'auto' }}
-              />
+                onFocus={() => cargarCatalogo(p.id)}
+                style={{ ...inputBase, flex:'1 1 170px', width:'auto', cursor:'pointer' }}
+              >
+                <option value="">{catalogos[p.id] ? 'Elige modelo…' : 'Toca para cargar modelos…'}</option>
+                {catalogos[p.id]?.autoDisponible && (
+                  <option value={MODELO_AUTOMATICO}>
+                    Auto — el más barato{catalogos[p.id]?.auto ? ` (ahora: ${catalogos[p.id]!.auto!.id})` : ''}
+                  </option>
+                )}
+                {catalogos[p.id]?.models.map(m => (
+                  <option key={m.id} value={m.id}>
+                    {m.gratuito ? '· gratis · ' : m.salida !== null ? `· ${m.salida.toFixed(2)} $/M · ` : '· '}{m.id}
+                  </option>
+                ))}
+              </select>
               <button onClick={() => void guardar(p.id)} disabled={ocupado===p.id}
                 style={{ background:ocupado===p.id?C.surf3:C.gold, color:ocupado===p.id?C.muted:C.bg, border:'none', borderRadius:9, padding:'8px 14px', fontSize:'.76em', fontWeight:600, fontFamily:"'Sora',sans-serif", cursor:ocupado===p.id?'default':'pointer' }}>
                 Guardar
