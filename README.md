@@ -126,6 +126,8 @@ A partir de ahí, el propietario emite un token por persona con rol y ámbitos (
 
 **La ejecución de órdenes viene desactivada** (`AURUM_TRADING_ENABLED=false`). Cuando se activa, toda orden pasa por doble confirmación (`POST /orders/prepare` → `POST /invest`), clave de idempotencia y límite diario acumulado.
 
+Para conectarlo con tu broker paso a paso, incluido cómo llegar desde el móvil, está [docs/BACKEND.md](docs/BACKEND.md). Cada usuario instala el suyo: **no es un servidor compartido**, y así las credenciales de banca de cada uno se quedan en su propia máquina.
+
 Consulta [docs/HANDOFF.md](docs/HANDOFF.md) para el estado técnico, límites actuales y prioridades de continuación.
 
 ---

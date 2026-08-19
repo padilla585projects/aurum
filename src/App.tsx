@@ -2834,6 +2834,28 @@ function InvestTab({ profile, portfolio, setPortfolio, userProfile, onNavigate }
 /* ══════════════════════════════════════════════════════════════
    SETTINGS TAB
 ══════════════════════════════════════════════════════════════ */
+/**
+ * Comprueba la direccion antes de intentar conectar, para poder explicar el
+ * fallo mas comun —contenido mixto— que de otro modo aparece como un error de
+ * red generico y deja al usuario sin pista de que hacer.
+ */
+function revisarDireccion(valor: string): string | null {
+  const u = valor.trim();
+  if (!u) return 'Escribe la dirección del backend.';
+
+  let dir: URL;
+  try { dir = new URL(u); }
+  catch { return 'Esa dirección no es válida. Tiene que empezar por http:// o https://'; }
+
+  const esLocal = ['localhost', '127.0.0.1', '[::1]'].includes(dir.hostname);
+  if (window.location.protocol === 'https:' && dir.protocol === 'http:' && !esLocal) {
+    return 'El navegador va a bloquear esta conexión. AURUM se sirve por https y esa dirección '
+         + 'es http: solo se permite si es localhost. Desde el móvil necesitas una dirección '
+         + 'https — con Tailscale, por ejemplo. Está explicado en docs/BACKEND.md.';
+  }
+  return null;
+}
+
 function BackendSection() {
   const [url,        setUrl]        = useState('');
   const [apiKey,     setApiKey]     = useState('');
@@ -2854,18 +2876,34 @@ function BackendSection() {
   });
 
   const testConnection = async () => {
+    const problema = revisarDireccion(url);
+    if (problema) { setStatus('error'); setStatusMsg(problema); return; }
+
     setStatus('idle'); setStatusMsg('Conectando…');
     try {
       const res = await backendCall({ url, apiKey }, '/health');
-      if (res.status === 'ok') {
-        setStatus('ok');
-        setStatusMsg(res.tr_authenticated ? '✓ Conectado · TR autenticado' : '✓ Conectado · TR no autenticado aún');
-        await sSet('aurum-backend-config', { url, apiKey });
-      } else {
-        setStatus('error'); setStatusMsg('Respuesta inesperada');
-      }
+      if (res.status !== 'ok') { setStatus('error'); setStatusMsg('Ha respondido algo que no parece un backend de AURUM. Revisa la dirección.'); return; }
+
+      setStatus('ok');
+      setStatusMsg(res.tr_authenticated
+        ? '✓ Conectado. Trade Republic ya está enlazado.'
+        : '✓ Conectado. Falta enlazar Trade Republic, aquí abajo.');
+      await sSet('aurum-backend-config', { url, apiKey });
     } catch(e:any) {
-      setStatus('error'); setStatusMsg(e.message);
+      setStatus('error');
+      // Un fetch que no llega lanza TypeError sin detalle: el navegador no dice
+      // por que, asi que hay que explicarle al usuario las causas posibles.
+      const msg = String(e?.message ?? e);
+      if (e instanceof TypeError || msg.includes('Failed to fetch') || msg.includes('NetworkError')) {
+        setStatusMsg('No se ha podido contactar. O el backend no está arrancado, o la dirección no es esa. '
+          + 'Si lo instalaste en este mismo ordenador, prueba con http://localhost:8000');
+      } else if (msg.startsWith('401')) {
+        setStatusMsg('El token no vale para este backend. Si lo has perdido, borra backend/aurum.db y vuelve a ejecutar el instalador.');
+      } else if (msg.startsWith('403')) {
+        setStatusMsg('Ese token no tiene permiso para esta operación.');
+      } else {
+        setStatusMsg(msg);
+      }
     }
   };
 
@@ -2889,16 +2927,23 @@ function BackendSection() {
 
   return (
     <div>
-      <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.18em', fontWeight:600, color:C.goldL, marginBottom:4 }}>Backend Proxmox</div>
-      <div style={{ fontSize:'.74em', color:C.muted, marginBottom:14 }}>Conecta el servidor local para ejecución automática de órdenes en Trade Republic.</div>
+      <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.18em', fontWeight:600, color:C.goldL, marginBottom:4 }}>Tu backend</div>
+      <div style={{ fontSize:'.74em', color:C.muted, marginBottom:14, lineHeight:1.5 }}>
+        Un programa que corre en tu ordenador y lee tu cartera real de Trade Republic. Tus
+        credenciales se quedan ahí, cifradas, y no salen de tu máquina. Se instala ejecutando
+        <code style={{ color:C.text }}> instalar.ps1 </code>(Windows) o
+        <code style={{ color:C.text }}> instalar.sh </code>(Linux y macOS) dentro de la carpeta
+        <code style={{ color:C.text }}> backend</code>; al terminar te da la dirección y el token
+        que van aquí abajo.
+      </div>
       <div style={{ background:C.surf2, border:`1px solid ${C.border}`, borderRadius:13, padding:'18px 20px', display:'flex', flexDirection:'column', gap:14 }}>
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
           <div>
-            <div style={{ fontSize:'.65em', color:C.muted, marginBottom:5 }}>Backend URL (Tailscale)</div>
-            <input value={url} onChange={e=>setUrl(e.target.value)} placeholder="http://100.x.x.x:8000" style={fs} />
+            <div style={{ fontSize:'.65em', color:C.muted, marginBottom:5 }}>Dirección</div>
+            <input value={url} onChange={e=>setUrl(e.target.value)} placeholder="http://localhost:8000" style={fs} />
           </div>
           <div>
-            <div style={{ fontSize:'.65em', color:C.muted, marginBottom:5 }}>API Key (AURUM_API_KEY)</div>
+            <div style={{ fontSize:'.65em', color:C.muted, marginBottom:5 }}>Token de acceso</div>
             <input value={apiKey} onChange={e=>setApiKey(e.target.value)} type="password" placeholder="••••••••••••••••" style={fs} />
           </div>
         </div>
