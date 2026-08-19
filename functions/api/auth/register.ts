@@ -13,6 +13,7 @@ import {
   audit,
   bootstrapAllowed,
   checkInvite,
+  countUsers,
   consumeInvite,
   createSession,
   createUser,
@@ -50,6 +51,29 @@ export async function onRequestPost(context: PagesContext): Promise<Response> {
   let inviteHash: string | null = null;
 
   if (!isBootstrap) {
+    // Quien manda un secreto de arranque merece saber por qué se le rechaza.
+    // Antes caía en el mensaje genérico de invitación, que no dice nada del
+    // secreto y deja al propietario sin forma de diagnosticar su propia alta.
+    if (typeof body.bootstrapSecret === 'string' && body.bootstrapSecret.length > 0) {
+      const sinUsuarios = (await countUsers(env)) === 0;
+      await audit(env, {
+        event: 'register_bootstrap_rejected',
+        route: '/api/auth/register',
+        status: 403,
+        ip,
+        detail: { email, sinUsuarios },
+      });
+      return fail(
+        403,
+        'bootstrap_invalid',
+        !sinUsuarios
+          ? 'Esta instalación ya tiene una cuenta: el arranque está cerrado. Necesitas una invitación.'
+          : env.AURUM_BOOTSTRAP_SECRET
+            ? 'El secreto de arranque no es correcto.'
+            : 'El despliegue no tiene configurada AURUM_BOOTSTRAP_SECRET.',
+      );
+    }
+
     if (typeof body.invite !== 'string' || !body.invite.trim()) {
       return fail(403, 'invite_required', 'El registro es solo por invitación.');
     }

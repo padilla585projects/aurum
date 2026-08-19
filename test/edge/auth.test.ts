@@ -53,20 +53,35 @@ describe('alta del propietario', () => {
     await crearOwner();
     const res = await dispatch('/api/auth/register', {
       method: 'POST',
-      body: { email: 'segundo@aurum.test', password: CLAVE, bootstrapSecret: SECRETO },
+      body: { email: 'segundo@aurum.test', password: CLAVE },
     });
     expect(res.status).toBe(403);
     expect(await res.json()).toMatchObject({ error: { code: 'invite_required' } });
     expect(await countRows('users')).toBe(1);
   });
 
-  it('un secreto de arranque incorrecto no abre nada', async () => {
+  it('un secreto de arranque incorrecto no abre nada, y lo dice', async () => {
     const res = await dispatch('/api/auth/register', {
       method: 'POST',
       body: { email: 'intruso@aurum.test', password: CLAVE, bootstrapSecret: 'no-es-el-secreto' },
     });
     expect(res.status).toBe(403);
+    // El mensaje tiene que hablar del secreto: caer en el genérico de
+    // invitación deja al propietario sin saber qué ha fallado en su propia alta.
+    expect(await res.json()).toMatchObject({ error: { code: 'bootstrap_invalid' } });
     expect(await countRows('users')).toBe(0);
+    expect(await countRows('audit_log', 'event = ?', 'register_bootstrap_rejected')).toBe(1);
+  });
+
+  it('con la instalación ya iniciada, el secreto de arranque explica que llega tarde', async () => {
+    await crearOwner();
+    const res = await dispatch('/api/auth/register', {
+      method: 'POST',
+      body: { email: 'tarde@aurum.test', password: CLAVE, bootstrapSecret: SECRETO },
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ error: { code: 'bootstrap_invalid' } });
+    expect(await countRows('users')).toBe(1);
   });
 
   it('valida correo y contraseña antes de mirar la vía de alta', async () => {

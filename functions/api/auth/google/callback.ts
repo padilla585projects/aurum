@@ -17,6 +17,7 @@ import {
   audit,
   checkInvite,
   consumeInvite,
+  countUsers,
   createSession,
   createUser,
   findUserByEmail,
@@ -188,6 +189,15 @@ export async function onRequestGet(context: PagesContext): Promise<Response> {
   // 3) Cuenta nueva: solo con invitación válida.
   if (!user) {
     if (!state.invite) {
+      // Sin esto, el intento no dejaba rastro: alguien podía quedarse fuera sin
+      // que hubiera nada que mirar en la auditoría.
+      await audit(env, {
+        event: 'oauth_invite_required',
+        route: '/api/auth/google/callback',
+        status: 403,
+        ip,
+        detail: { email, sinUsuarios: (await countUsers(env)) === 0 },
+      });
       return finish({ auth: 'error', reason: 'invite_required' });
     }
     const invite = await checkInvite(env, state.invite, email);

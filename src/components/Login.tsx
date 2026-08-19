@@ -155,6 +155,13 @@ export default function Login({
             }}>
               Esta instalación aún no tiene usuarios. La primera cuenta será la
               propietaria y podrá invitar al resto.
+              {config.googleEnabled && (
+                <>
+                  {' '}Tiene que crearse con contraseña: si Google pudiera crear
+                  la primera cuenta, bastaría con llegar antes que tú para
+                  quedarse con la instalación. Podrás vincular Google después.
+                </>
+              )}
             </div>
           )}
 
@@ -264,7 +271,7 @@ export default function Login({
             </button>
           </form>
 
-          {config.googleEnabled && (
+          {config.googleEnabled && mode !== 'bootstrap' && (
             <>
               <div style={{
                 display: 'flex',
