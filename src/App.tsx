@@ -31,7 +31,7 @@ import type {
   AgentKey, ChatMessage, DisplayMessage, InvestmentProposal, Position, RouteResult, UserProfile,
   AurumAlert, AutonomousConfig, AutoInvestConfig, ActionLogEntry, Decision, Lesson,
 } from './nexus/index';
-import { callAnthropic } from './nexus/providers';
+import { MODELO_DE_AJUSTES, callAnthropic, callProvider } from './nexus/providers';
 import * as store from './store/state';
 import { C, PIE_PAL } from './theme';
 import { useSession } from './store/session-context';
@@ -688,11 +688,14 @@ async function parsePortfolioWithAI(
   }
   content.push({ type:'text', text: text || 'Extrae las posiciones de esta imagen de cartera.' });
 
-  const raw = await callAnthropic(
+  // Importar cartera es puro reconocimiento de imagen: si el usuario tiene
+  // Gemini configurado se hace ahi, y si no vuelve a Claude sola.
+  const raw = await callProvider(
+    { provider: 'gemini', model: MODELO_DE_AJUSTES,
+      fallback: { provider: 'anthropic', model: 'claude-sonnet-5' } },
     [{ role:'user', content }],
     IMPORT_SYSTEM,
-    'claude-sonnet-5',
-    undefined, 512, false, // import: no web search, max 512 tokens
+    undefined, 512, false, // sin busqueda web, maximo 512 tokens
   );
   const json = raw.replace(/```[a-z]*\n?|```/g, '').trim();
   const parsed = JSON.parse(json) as any[];
@@ -1841,8 +1844,17 @@ function ResearchTab({ portfolio, profile }: { portfolio: Position[]; profile: s
     const bearPrompt = `Eres el Oso: analista financiero escéptico. Tienes que argumentar CON DATOS por qué "${debateAsset}" es una mala inversión o al menos tiene riesgos serios que el mercado ignora. Cita valoración excesiva, riesgos estructurales, competencia, deuda, ciclo, catalizadores negativos. 3-4 párrafos. Sé riguroso.`;
 
     try {
+      // El Toro va a Grok y el Oso a Claude: con dos modelos distintos el debate
+      // deja de ser Claude discutiendo consigo mismo. Sin clave de Grok, el
+      // respaldo devuelve el Toro a Claude y la funcion sigue igual que antes.
       const [bull, bear] = await Promise.all([
-        callAnthropic([{ role: 'user', content: bullPrompt }], 'Eres un experto analista financiero alcista. Responde en español.', 'claude-sonnet-5', undefined, 1024, false),
+        callProvider(
+          { provider: 'grok', model: MODELO_DE_AJUSTES,
+            fallback: { provider: 'anthropic', model: 'claude-sonnet-5' } },
+          [{ role: 'user', content: bullPrompt }],
+          'Eres un experto analista financiero alcista. Responde en español.',
+          undefined, 1024, false,
+        ),
         callAnthropic([{ role: 'user', content: bearPrompt }], 'Eres un experto analista financiero bajista. Responde en español.', 'claude-sonnet-5', undefined, 1024, false),
       ]);
       setDebateBull(bull);

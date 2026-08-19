@@ -44,6 +44,12 @@ export interface UserMemory {
 export interface RouteResult {
   provider: Provider;
   model: string;
+  /**
+   * A donde ir si esta ruta no puede atender la peticion: normalmente porque
+   * el usuario no ha configurado la clave de ese proveedor. Sin esto, activar
+   * un proveedor nuevo romperia la funcion para quien no lo tenga puesto.
+   */
+  fallback?: RouteResult;
 }
 
 export const EMPTY_PROFILE: UserProfile = {

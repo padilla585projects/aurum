@@ -1,4 +1,5 @@
 import type { AgentKey, ResearchTask, RouteResult } from './types';
+import { MODELO_DE_AJUSTES } from './providers';
 
 // Each agent is routed to the model best suited for its task:
 // - AURUM (general)  → Claude: best conversational quality + web search
@@ -18,7 +19,10 @@ const TASK_ROUTES: Record<ResearchTask, RouteResult> = {
   financials: { provider: 'openai',    model: 'gpt-4o-search-preview'   },
   analysts:   { provider: 'openai',    model: 'gpt-4o-search-preview'   },
   macro:      { provider: 'openai',    model: 'gpt-4o-search-preview'   },
-  risks:      { provider: 'deepseek',  model: 'deepseek-chat'            },
+  // Razona sobre texto ya recuperado: no busca en la web y no lleva ningun dato
+  // personal, asi que es el sitio donde el nivel gratuito no cuesta calidad.
+  risks:      { provider: 'openrouter', model: MODELO_DE_AJUSTES,
+                fallback: { provider: 'deepseek', model: 'deepseek-chat' } },
   synthesis:  { provider: 'anthropic', model: 'claude-sonnet-5' },
   prices:     { provider: 'openai',    model: 'gpt-4o-search-preview'   },
 };

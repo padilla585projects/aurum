@@ -193,6 +193,39 @@ export async function callDeepSeek(
 // Los tres exponen el formato de chat de OpenAI, asi que comparten una sola
 // implementacion. El modelo lo decide el servidor a partir de lo que el usuario
 // guardo en Ajustes; el que se manda aqui es solo el valor por defecto.
+/**
+ * Marcador para las rutas cuyo modelo decide el usuario en Ajustes. El servidor
+ * lo sustituye por el que este guardado, y si no hay ninguno responde 503 y
+ * entra el respaldo. Nunca llega asi a un proveedor.
+ */
+export const MODELO_DE_AJUSTES = 'definido-en-ajustes';
+
+/** Motivo por el que una ruta no puede atender: dispara el respaldo. */
+export class RutaNoDisponible extends Error {}
+
+/**
+ * Traduce el contenido del formato de bloques de Anthropic al de OpenAI, que es
+ * el que hablan Gemini, Grok y OpenRouter.
+ *
+ * Los PDF no tienen equivalente en ese formato, asi que en lugar de mandarlos
+ * mutilados se rechaza la ruta y el respaldo los lleva a Claude, que si los lee.
+ */
+function aFormatoOpenAI(content: string | unknown[]): string | unknown[] {
+  if (typeof content === 'string') return content;
+
+  return content.map(bloque => {
+    const b = bloque as { type?: string; text?: string; source?: { type?: string; media_type?: string; data?: string } };
+    if (b?.type === 'text') return { type: 'text', text: b.text ?? '' };
+    if (b?.type === 'image' && b.source?.type === 'base64') {
+      return {
+        type: 'image_url',
+        image_url: { url: `data:${b.source.media_type};base64,${b.source.data}` },
+      };
+    }
+    throw new RutaNoDisponible(`Contenido no soportado por este proveedor: ${b?.type ?? 'desconocido'}`);
+  });
+}
+
 export async function callByok(
   provider:      'gemini' | 'grok' | 'openrouter',
   messages:      ChatMessage[],
@@ -201,7 +234,8 @@ export async function callByok(
   maxTokens   =  1024,
   contextPrefix?: string,
 ): Promise<string> {
-  const msgs = contextPrefix ? injectContext(messages, contextPrefix) : messages;
+  const msgs = (contextPrefix ? injectContext(messages, contextPrefix) : messages)
+    .map(m => ({ ...m, content: aFormatoOpenAI(m.content) }));
 
   const res = await fetch(BYOK_URLS[provider], {
     method: 'POST',
@@ -216,6 +250,9 @@ export async function callByok(
 
   if (!res.ok) {
     const detalle = await res.text();
+    // 503 significa que falta la clave de ese proveedor: no es un fallo, es que
+    // el usuario no lo ha configurado, y entonces manda el respaldo.
+    if (res.status === 503) throw new RutaNoDisponible(`${provider} sin configurar`);
     throw new Error(`${provider} ${res.status}: ${detalle.slice(0, 300)}`);
   }
 
@@ -228,6 +265,26 @@ export async function callByok(
 }
 
 export async function callProvider(
+  route:          RouteResult,
+  messages:       ChatMessage[],
+  system:         string,
+  onSearch?:      () => void,
+  maxTokens?:     number,
+  useWebSearch?:  boolean,
+  contextPrefix?: string,
+): Promise<string> {
+  try {
+    return await despachar(route, messages, system, onSearch, maxTokens, useWebSearch, contextPrefix);
+  } catch (err) {
+    // Ruta no disponible: se intenta el respaldo antes de dar la funcion por rota.
+    if (err instanceof RutaNoDisponible && route.fallback) {
+      return despachar(route.fallback, messages, system, onSearch, maxTokens, useWebSearch, contextPrefix);
+    }
+    throw err;
+  }
+}
+
+async function despachar(
   route:          RouteResult,
   messages:       ChatMessage[],
   system:         string,

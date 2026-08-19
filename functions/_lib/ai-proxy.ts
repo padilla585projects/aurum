@@ -266,6 +266,17 @@ export async function proxyToProvider(context: ProxyContext, provider: Provider)
     );
   }
 
+  // En los proveedores que aporta el usuario no se puede adivinar el catalogo:
+  // el modelo tiene que salir de Ajustes. Se responde 503 —igual que si faltara
+  // la clave— para que el cliente use su ruta de respaldo en vez de fallar.
+  if (!config.allowed && credentials.source === 'user' && !credentials.model) {
+    return fail(
+      503,
+      'model_not_configured',
+      `Indica que modelo usar con tu clave de ${config.label} en Ajustes → Claves de IA.`,
+    );
+  }
+
   const validated = await validateBody(request, provider, credentials);
   if (validated instanceof Response) return validated;
 
