@@ -59,6 +59,7 @@ class TRClient:
         self._process_id:    Optional[str] = None
         self._accion:        Optional[str] = None
         self._sesion_http:   Optional[httpx.AsyncClient] = None
+        self._sec_acc_no:    Optional[str] = None
         self.authenticated = False
 
     # ── WebSocket helpers ───────────────────────────────────────────────────
@@ -260,24 +261,73 @@ class TRClient:
 
     # ── Portfolio ───────────────────────────────────────────────────────────
 
+    async def _numero_de_cuenta(self) -> str:
+        """El número de cuenta de valores, que `compactPortfolioByType` exige.
+
+        Antes no hacía falta: el tema `portfolio` devolvía todo sin preguntar.
+        TR lo retiró y el que lo sustituye va por cuenta, así que primero hay
+        que averiguar cuál es la tuya.
+        """
+        if self._sec_acc_no:
+            return self._sec_acc_no
+
+        datos = await self._sub({"type": "accountPairs"})
+        self._sec_acc_no = _buscar(datos, ("securitiesAccountNumber", "secAccNo", "accountNumber"))
+        if not self._sec_acc_no:
+            raise TRAuthError(
+                "No encuentro el número de cuenta de valores en la respuesta de TR. "
+                f"Claves recibidas: {_claves(datos)}"
+            )
+        return self._sec_acc_no
+
     async def get_portfolio(self) -> list[dict]:
-        data = await self._sub({"type": "portfolio"})
-        positions = []
-        for item in data.get("positions", []):
-            positions.append({
-                "isin":          item.get("instrumentId", "").split(".")[0],
-                "name":          item.get("instrument", {}).get("shortName", ""),
-                "shares":        item.get("netSize", 0),
-                "avg_price":     item.get("averageBuyIn", 0),
-                "current_price": item.get("currentPrice", 0),
-                "value":         item.get("netValue", 0),
-                "pnl_pct":       item.get("returnPercent", 0),
+        """Posiciones de la cartera.
+
+        El tema `portfolio` desapareció («Unknown topic type: portfolio.31») y
+        lo sustituye `compactPortfolioByType`. Los nombres de los campos se
+        buscan con alternativas porque solo se pueden confirmar contra una
+        cuenta viva; si no cuadra nada, se dice qué llegó en vez de devolver
+        una cartera vacía, que se leería como «no tienes nada».
+        """
+        datos = await self._sub({
+            "type":     "compactPortfolioByType",
+            "secAccNo": await self._numero_de_cuenta(),
+        })
+
+        crudas = _lista_de_posiciones(datos)
+        if crudas is None:
+            raise TROrderError(
+                "La cartera ha llegado con una forma que no reconozco. "
+                f"Claves recibidas: {_claves(datos)}"
+            )
+
+        posiciones = []
+        for item in crudas:
+            isin = str(_buscar(item, ("isin", "instrumentId", "id")) or "").split(".")[0]
+            if not isin:
+                continue
+            posiciones.append({
+                "isin":          isin,
+                "name":          _buscar(item, ("shortName", "name")) or isin,
+                "shares":        _numero(item, ("netSize", "size", "quantity")),
+                "avg_price":     _numero(item, ("averageBuyIn", "averagePrice", "buyInPrice")),
+                "current_price": _numero(item, ("currentPrice", "lastPrice", "price")),
+                "value":         _numero(item, ("netValue", "value", "marketValue")),
+                "pnl_pct":       _numero(item, ("returnPercent", "performancePercent", "netPerformancePercent")),
             })
-        return positions
+        return posiciones
 
     async def get_cash(self) -> float:
-        data = await self._sub({"type": "cash"})
-        return data.get("availableCash", 0)
+        """Efectivo disponible. `cash` sigue existiendo; los otros son respaldo."""
+        for tema in ("cash", "availableCash", "availableCashForPayout"):
+            try:
+                datos = await self._sub({"type": tema})
+            except (TROrderError, TRAuthError, TimeoutError):
+                continue
+            valor = _numero_suelto(datos, ("availableCash", "amount", "value", "cash"))
+            if valor is not None:
+                return valor
+        return 0.0
 
     # ── Price ───────────────────────────────────────────────────────────────
 
@@ -286,9 +336,23 @@ class TRClient:
         return data.get("last", {}).get("price", 0)
 
     # ── Orders ──────────────────────────────────────────────────────────────
+    #
+    # `createOrder` tambien desaparecio del WebSocket («Unknown topic type:
+    # createOrder.31»). Estas tres funciones estan sin migrar a proposito: las
+    # ordenes van desactivadas de fabrica (AURUM_TRADING_ENABLED=false), asi
+    # que nadie deberia llegar aqui. Si alguien las activa, es mejor decirle
+    # por que no funciona que dejarle un error de protocolo sin explicar.
+
+    async def _ordenes_sin_migrar(self) -> None:
+        raise TROrderError(
+            "Mandar ordenes a Trade Republic esta sin migrar: TR retiro el tema "
+            "`createOrder` de su WebSocket. Leer la cartera si funciona."
+        )
+
 
     async def buy_cash_amount(self, isin: str, amount_eur: float) -> dict:
         logger.info(f"Comprando {amount_eur}€ de {isin}…")
+        await self._ordenes_sin_migrar()
         data = await self._sub({
             "type": "createOrder",
             "order": {
@@ -305,6 +369,7 @@ class TRClient:
     async def sell_shares(self, isin: str, shares: float) -> dict:
         """Vende una cantidad exacta de acciones/participaciones."""
         logger.info(f"Vendiendo {shares} unidades de {isin}…")
+        await self._ordenes_sin_migrar()
         data = await self._sub({
             "type": "createOrder",
             "order": {
@@ -320,6 +385,7 @@ class TRClient:
     async def sell_cash_amount(self, isin: str, amount_eur: float) -> dict:
         """Vende un importe en euros de un instrumento (requiere conocer el precio actual)."""
         logger.info(f"Vendiendo {amount_eur}€ de {isin}…")
+        await self._ordenes_sin_migrar()
         # Obtener precio actual para calcular número de acciones
         price = await self.get_price(isin)
         if not price:
@@ -345,3 +411,78 @@ class TRClient:
             await self.connect()
         else:
             raise TRAuthError("No autenticado. Usa /auth/init + /auth/verify primero.")
+
+
+# ── Lectura tolerante de las respuestas ─────────────────────────────────────
+#
+# TR cambia nombres de campos sin avisar —de ahí viene todo esto— así que en
+# vez de acceder a una clave concreta se busca entre las que puede usar. No es
+# elegante; es lo que evita que un renombrado deje la cartera en blanco sin
+# que nadie se entere.
+
+
+def _claves(datos: Any) -> Any:
+    """Qué venía en la respuesta, para poder decirlo en el error."""
+    if isinstance(datos, dict):
+        return sorted(datos.keys())
+    if isinstance(datos, list):
+        return f"lista de {len(datos)}" + (f", primer elemento {_claves(datos[0])}" if datos else "")
+    return type(datos).__name__
+
+
+def _buscar(datos: Any, nombres: tuple[str, ...], profundidad: int = 3) -> Any:
+    """Primer valor no vacío bajo cualquiera de esos nombres, mirando dentro."""
+    if profundidad < 0:
+        return None
+    if isinstance(datos, dict):
+        for nombre in nombres:
+            valor = datos.get(nombre)
+            if valor not in (None, "", [], {}):
+                return valor
+        for valor in datos.values():
+            encontrado = _buscar(valor, nombres, profundidad - 1)
+            if encontrado is not None:
+                return encontrado
+    elif isinstance(datos, list):
+        for elemento in datos:
+            encontrado = _buscar(elemento, nombres, profundidad - 1)
+            if encontrado is not None:
+                return encontrado
+    return None
+
+
+def _numero(item: Any, nombres: tuple[str, ...]) -> float:
+    valor = _buscar(item, nombres)
+    try:
+        return float(valor)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _numero_suelto(datos: Any, nombres: tuple[str, ...]) -> Optional[float]:
+    valor = _buscar(datos, nombres)
+    if isinstance(valor, list) and valor:
+        valor = _buscar(valor[0], nombres + ("amount", "value"))
+    try:
+        return float(valor)
+    except (TypeError, ValueError):
+        return None
+
+
+def _lista_de_posiciones(datos: Any) -> Optional[list]:
+    """Encuentra la lista de posiciones, venga suelta o dentro de una clave."""
+    if isinstance(datos, list):
+        return datos
+    if isinstance(datos, dict):
+        for nombre in ("positions", "securities", "items", "portfolio"):
+            valor = datos.get(nombre)
+            if isinstance(valor, list):
+                return valor
+        # `compactPortfolioByType` agrupa por tipo de producto: una lista de
+        # categorías, cada una con sus posiciones dentro.
+        for valor in datos.values():
+            if isinstance(valor, list) and valor and isinstance(valor[0], dict):
+                dentro = [p for c in valor for p in (_lista_de_posiciones(c) or [])]
+                if dentro:
+                    return dentro
+    return None

@@ -114,11 +114,16 @@ Para desactivarlo más tarde: `tailscale serve --https=443 off`.
 
 Con el backend ya conectado, en la misma pantalla de Ajustes introduce el **teléfono y el PIN** de tu cuenta de Trade Republic.
 
-TR mandará un **código por SMS a tu móvil**. Introdúcelo para completar el acceso. Ese paso no se puede automatizar y es deliberado: es lo que impide que nadie entre en tu cuenta solo con haberte robado un fichero.
+**Ya no llega un SMS.** Trade Republic cambió su acceso en 2026: ahora te sale un aviso en **su propia aplicación del móvil** para que apruebes la entrada, y AURUM espera hasta que lo hagas. Si tu cuenta usa una aplicación de autenticación, te pedirá ese código en su lugar.
+
+Ese paso no se puede automatizar y es deliberado: es lo que impide que nadie entre en tu cuenta solo con haberte robado un fichero.
 
 Tus credenciales se guardan **cifradas** con la clave que generó el instalador, y solo en tu máquina.
 
 ## 4. Comprar y vender está desactivado
+
+> **Además, está sin migrar.** TR retiró también la vía por la que se mandaban las órdenes. Leer la cartera funciona; mandar órdenes avisará de que no está disponible aunque actives el interruptor de abajo.
+
 
 De fábrica, `AURUM_TRADING_ENABLED=false`. AURUM puede leer tu cartera, analizarla y proponerte operaciones, pero **no manda ninguna orden al broker**.
 
