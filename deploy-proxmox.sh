@@ -263,26 +263,73 @@ if $CON_TAILSCALE; then
     sleep 3
 
     if [ -n "$CLAVE_TS" ]; then
-        pct exec "$VMID" -- tailscale up --authkey "$CLAVE_TS" --hostname aurum-backend >/dev/null 2>&1 \
-            || aviso "La clave no ha servido; habrá que autorizarlo a mano."
+        pct exec "$VMID" -- tailscale up --authkey "$CLAVE_TS" --hostname aurum-backend >/dev/null 2>&1             || aviso "La clave no ha servido; habrá que autorizarlo a mano."
     else
-        echo ""
-        echo "  Abre este enlace y autoriza el equipo:"
-        pct exec "$VMID" -- tailscale up --hostname aurum-backend 2>&1 | grep -o 'https://login[^ ]*' || true
-        echo ""
-        read -rp "  Pulsa ENTER cuando lo hayas autorizado… "
+        # `tailscale up` se queda esperando a que autorices, y no suelta la
+        # salida hasta entonces. Si se lee con una tuberia, el enlace no
+        # aparece hasta despues de haberlo usado — es decir, nunca. Se lanza en
+        # segundo plano y se lee el enlace del registro.
+        pct exec "$VMID" -- bash -c             "rm -f /tmp/ts-up.log; setsid tailscale up --hostname aurum-backend >/tmp/ts-up.log 2>&1 < /dev/null &"             >/dev/null 2>&1
+
+        ENLACE=""
+        for _ in $(seq 1 20); do
+            sleep 2
+            ENLACE=$(pct exec "$VMID" -- grep -om1 'https://login[^[:space:]]*' /tmp/ts-up.log 2>/dev/null || true)
+            [ -n "$ENLACE" ] && break
+        done
+
+        if [ -z "$ENLACE" ]; then
+            aviso "No he conseguido el enlace de autorización. Hazlo después con:"
+            aviso "  pct exec $VMID -- tailscale up"
+        else
+            echo ""
+            echo "  Abre este enlace en el navegador y autoriza el equipo:"
+            echo -e "    ${B}${ENLACE}${N}"
+            echo ""
+            printf "  Esperando"
+            # Se detecta solo en cuanto autorizas: nadie tiene que volver aqui
+            # a pulsar una tecla. Cinco minutos de margen, y si no, se sigue.
+            for _ in $(seq 1 150); do
+                if pct exec "$VMID" -- tailscale status >/dev/null 2>&1; then break; fi
+                printf "."
+                sleep 2
+            done
+            echo ""
+        fi
     fi
 
     if pct exec "$VMID" -- tailscale status >/dev/null 2>&1; then
-        # Esto es lo que hace que funcione desde el movil: certificado propio
-        # y https, en vez de la IP de Tailscale por http.
-        pct exec "$VMID" -- tailscale serve --bg --https=443 http://127.0.0.1:8000 >/dev/null 2>&1 \
-            || aviso "No se ha podido publicar por https. ¿Tienes activados los certificados HTTPS en login.tailscale.com → DNS?"
-        DOMINIO=$(pct exec "$VMID" -- tailscale status --json 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))' 2>/dev/null || true)
-        [ -n "$DOMINIO" ] && DIRECCION="https://$DOMINIO"
-        ok "Publicado en ${DIRECCION:-la tailnet}"
+        ok "Equipo autorizado en tu tailnet"
+
+        DOMINIO=$(pct exec "$VMID" -- tailscale status --json 2>/dev/null             | python3 -c 'import sys,json; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))' 2>/dev/null || true)
+
+        # Esto es lo que hace que funcione desde el movil: certificado propio y
+        # https, en vez de la IP de Tailscale por http. Exige que la tailnet
+        # tenga los certificados activados, y ese es el tropiezo mas comun —
+        # asi que si falla se dice exactamente donde se activa.
+        SALIDA_SERVE=$(pct exec "$VMID" -- tailscale serve --bg --https=443 http://127.0.0.1:8000 2>&1 || true)
+
+        if pct exec "$VMID" -- tailscale serve status 2>/dev/null | grep -q 'https://'; then
+            [ -n "$DOMINIO" ] && DIRECCION="https://$DOMINIO"
+            ok "Publicado en ${DIRECCION:-la tailnet}"
+
+            # Comprobar que responde de verdad, no solo que el mandato no falló.
+            if [ -n "$DIRECCION" ] && curl -sf --max-time 10 "$DIRECCION/health" >/dev/null 2>&1; then
+                ok "Comprobado: responde por https"
+            else
+                aviso "Publicado, pero aún no responde desde aquí. Suele ser el certificado,"
+                aviso "que tarda un minuto la primera vez."
+            fi
+        else
+            aviso "No se ha podido publicar por https."
+            echo "$SALIDA_SERVE" | head -3 | sed 's/^/      /'
+            aviso "Casi siempre es esto: entra en login.tailscale.com → DNS y activa"
+            aviso "«HTTPS Certificates». Después, aquí:"
+            aviso "  pct exec $VMID -- tailscale serve --bg --https=443 http://127.0.0.1:8000"
+        fi
     else
-        aviso "Tailscale no ha quedado conectado. Puedes hacerlo después con: pct exec $VMID -- tailscale up"
+        aviso "Tailscale no ha quedado conectado. Puedes hacerlo después con:"
+        aviso "  pct exec $VMID -- tailscale up"
     fi
 fi
 
