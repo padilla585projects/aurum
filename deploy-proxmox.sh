@@ -5,9 +5,12 @@
 #  Crea un LXC, instala el backend, lo deja como servicio y —si quieres
 #  usar AURUM desde el móvil— lo publica por https con Tailscale.
 #
-#  Ejecutar como root en el HOST de Proxmox:
+#  Ejecutar como root en el HOST de Proxmox. No hace falta descargar nada
+#  antes ni tener el proyecto ahi: el script se trae lo que necesita.
 #
-#     bash deploy-proxmox.sh
+#     bash -c "$(curl -fsSL https://raw.githubusercontent.com/padilla585projects/aurum/main/deploy-proxmox.sh)"
+#
+#  Si ya tienes el proyecto clonado, `bash deploy-proxmox.sh` usa esa copia.
 #
 #  Por qué https y no la IP de Tailscale a secas: AURUM se sirve por
 #  https, y un navegador no deja que una página https pida datos a una
@@ -30,8 +33,49 @@ echo   "  ───────────────────────�
 command -v pct >/dev/null 2>&1 || muere "Esto va en el HOST de Proxmox, no dentro de un contenedor."
 [ "$(id -u)" = 0 ] || muere "Hace falta ejecutarlo como root."
 
-ORIGEN="$(cd "$(dirname "$0")" && pwd)/backend"
-[ -d "$ORIGEN" ] || muere "No encuentro la carpeta backend/ junto a este script."
+# Cuando esto se ejecuta con `curl | bash` no hay ningun fichero al lado: el
+# script llega solo, por una tuberia. Antes eso obligaba a clonar el proyecto en
+# el host de Proxmox a mano —con git, que no siempre esta instalado— y era el
+# primer sitio donde la gente se atascaba. Ahora se trae el codigo el solo.
+REPO=https://github.com/padilla585projects/aurum
+DESCARGADO=""
+
+# Si algo falla a mitad queda un contenedor a medio hacer que hay que borrar a
+# mano, y para eso hay que saber que existe. Como lo ha creado este script y
+# todavia no contiene nada del usuario, se deshace solo — pero diciendolo.
+CREADO=""
+limpiar() {
+    local codigo=$?
+    [ -n "$DESCARGADO" ] && rm -rf "$DESCARGADO"
+    if [ "$codigo" != 0 ] && [ -n "$CREADO" ]; then
+        echo ""
+        aviso "Ha fallado a medias. Deshaciendo el contenedor $CREADO, que acababa de crear."
+        pct stop "$CREADO" >/dev/null 2>&1 || true
+        if pct destroy "$CREADO" >/dev/null 2>&1; then
+            aviso "Contenedor $CREADO eliminado. Puedes volver a ejecutar esto."
+        else
+            aviso "No he podido eliminarlo. Bórralo con: pct destroy $CREADO"
+        fi
+    fi
+    exit $codigo
+}
+trap limpiar EXIT
+
+ORIGEN=""
+if [ -f "${BASH_SOURCE[0]:-}" ]; then
+    AQUI="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    [ -d "$AQUI/backend" ] && ORIGEN="$AQUI/backend"
+fi
+
+if [ -z "$ORIGEN" ]; then
+    paso "Descargando AURUM"
+    command -v curl >/dev/null 2>&1 || muere "Hace falta curl. Instálalo con: apt-get install -y curl"
+    DESCARGADO=$(mktemp -d /tmp/aurum-src-XXXXXX)
+    curl -fsSL "$REPO/archive/refs/heads/main.tar.gz"         | tar -xz -C "$DESCARGADO" --strip-components=1         || muere "No se ha podido descargar el proyecto desde $REPO"
+    ORIGEN="$DESCARGADO/backend"
+    [ -d "$ORIGEN" ] || muere "El paquete descargado no trae la carpeta backend/."
+    ok "Descargado"
+fi
 
 # ── Lo que necesito saber ──────────────────────────────────────────
 paso "Configuración"
@@ -98,6 +142,7 @@ pct create "$VMID" "$PLANTILLA" \
     --net0 "name=eth0,bridge=${PUENTE},ip=dhcp,firewall=0" \
     --unprivileged 1 --features nesting=1 \
     --ostype debian --onboot 1 --start 0 >/dev/null
+CREADO="$VMID"
 ok "Contenedor creado"
 
 if $CON_TAILSCALE; then
@@ -274,6 +319,10 @@ else
     TOKEN=""
     aviso "No se han podido crear los tokens. ¿Ya existía uno de antes?"
 fi
+
+# A partir de aqui el contenedor ya es utilizable: aunque falle algo de lo que
+# queda, borrarlo seria peor que dejarlo.
+CREADO=""
 
 # ── Resumen ────────────────────────────────────────────────────────
 echo ""
