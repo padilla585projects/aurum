@@ -2864,7 +2864,7 @@ function BackendSection() {
   const [trPhone,    setTrPhone]    = useState('');
   const [trPin,      setTrPin]      = useState('');
   const [trOtp,      setTrOtp]      = useState('');
-  const [authPhase,  setAuthPhase]  = useState<'idle'|'otp'|'done'>('idle');
+  const [authPhase,  setAuthPhase]  = useState<'idle'|'otp'|'aprobar'|'done'>('idle');
   const [authMsg,    setAuthMsg]    = useState('');
   const fs: React.CSSProperties    = { ...inputBase, padding:'8px 12px' };
 
@@ -2928,19 +2928,40 @@ function BackendSection() {
   };
 
   const sendOtp = async () => {
-    setAuthMsg('Enviando…');
+    // Trade Republic retiró el SMS: ahora decide él si pide un código de
+    // autenticador o si hay que aprobar desde su aplicación del móvil. Se
+    // hace lo que diga, en vez de dar por supuesto el camino de antes.
+    setAuthMsg('Conectando con Trade Republic…');
     try {
-      await backendCall({ url, apiKey }, '/auth/init', 'POST', { phone: trPhone, pin: trPin });
-      setAuthPhase('otp'); setAuthMsg('OTP enviado a tu teléfono TR →');
-    } catch(e:any) { setAuthMsg(`Error: ${e.message}`); }
+      const r = await backendCall({ url, apiKey }, '/auth/init', 'POST', { phone: trPhone, pin: trPin });
+
+      if (r.needsCode) {
+        setAuthPhase('otp');
+        setAuthMsg('Introduce el código de tu aplicación de autenticación.');
+        return;
+      }
+
+      setAuthPhase('aprobar');
+      setAuthMsg('Abre Trade Republic en tu móvil y aprueba el acceso. Esperando…');
+      // Esta llamada se queda abierta mientras el backend sondea a TR.
+      await backendCall({ url, apiKey }, '/auth/verify', 'POST', { otp: '' });
+      setAuthPhase('done');
+      setAuthMsg('Trade Republic enlazado. AURUM ya puede leer tu cartera.');
+    } catch (e: any) {
+      setAuthPhase('idle');
+      setAuthMsg(`Error: ${String(e?.message ?? e)}`);
+    }
   };
 
   const verifyOtp = async () => {
     setAuthMsg('Verificando…');
     try {
       await backendCall({ url, apiKey }, '/auth/verify', 'POST', { otp: trOtp });
-      setAuthPhase('done'); setAuthMsg('✓ Trade Republic autenticado. AURUM puede ejecutar órdenes.');
-    } catch(e:any) { setAuthMsg(`Error: ${e.message}`); }
+      setAuthPhase('done');
+      setAuthMsg('Trade Republic enlazado. AURUM ya puede leer tu cartera.');
+    } catch (e: any) {
+      setAuthMsg(`Error: ${String(e?.message ?? e)}`);
+    }
   };
 
   const statusColor = status === 'ok' ? C.green : status === 'error' ? C.red : C.muted;
@@ -2995,14 +3016,20 @@ function BackendSection() {
                   <input value={trPin} onChange={e=>setTrPin(e.target.value)} type="password" placeholder="••••" style={{ ...fs, padding:'7px 10px' }} />
                 </div>
                 <button onClick={sendOtp} style={{ background:C.gold, border:'none', borderRadius:8, padding:'7px 14px', color:'#07070e', fontWeight:600, cursor:'pointer', fontSize:'.78em', fontFamily:"'Sora',sans-serif", whiteSpace:'nowrap' }}>
-                  Enviar OTP →
+                  Continuar →
                 </button>
+              </div>
+            )}
+            {authPhase === 'aprobar' && (
+              <div style={{ fontSize:'.72em', color:C.text, padding:'10px 12px', background:`${C.gold}0c`, borderRadius:8, border:`1px solid ${C.gold}33`, lineHeight:1.6 }}>
+                Abre <strong>Trade Republic</strong> en tu móvil: te saldrá un aviso para
+                aprobar este acceso. En cuanto lo apruebes, esto continúa solo.
               </div>
             )}
             {authPhase === 'otp' && (
               <div style={{ display:'grid', gridTemplateColumns:'1fr auto', gap:8, alignItems:'end' }}>
                 <div>
-                  <div style={{ fontSize:'.6em', color:C.muted, marginBottom:4 }}>Código OTP recibido en tu móvil</div>
+                  <div style={{ fontSize:'.6em', color:C.muted, marginBottom:4 }}>Código de tu aplicación de autenticación</div>
                   <input value={trOtp} onChange={e=>setTrOtp(e.target.value)} placeholder="1234" maxLength={6} style={{ ...fs, padding:'7px 10px', letterSpacing:'4px', fontFamily:"'DM Mono',monospace" }} />
                 </div>
                 <button onClick={verifyOtp} style={{ background:C.green, border:'none', borderRadius:8, padding:'7px 16px', color:'#07070e', fontWeight:600, cursor:'pointer', fontSize:'.78em', fontFamily:"'Sora',sans-serif" }}>

@@ -10,10 +10,12 @@ Flujo de auth:
 """
 
 import asyncio
+import base64
 import json
 import logging
 from typing import Any, Optional
 
+import httpx
 import websockets
 from websockets.exceptions import ConnectionClosed
 
@@ -24,6 +26,17 @@ WS_URL = "wss://api.traderepublic.com"
 # Version del protocolo que se anuncia en el saludo. Comprobado contra el
 # servidor real: 30 y 31 responden igual.
 WS_VERSION = 31
+
+API_URL = "https://api.traderepublic.com"
+
+# La v2 exige identificarse como cliente. Sin estas cabeceras TR responde
+# MISSING_REQUIRED_HEADER antes de mirar siquiera el cuerpo.
+APP_VERSION = "3.151.3"
+DEVICE_INFO = base64.b64encode(json.dumps({
+    "platform":   "web-pro",
+    "osVersion":  "chrome - 125.0.0",
+    "appVersion": APP_VERSION,
+}).encode()).decode()
 
 WS_HEADERS = {
     "Origin":     "https://app.traderepublic.com",
@@ -44,11 +57,13 @@ class TRClient:
         self._counter = 1
         self._session_token: Optional[str] = None
         self._process_id:    Optional[str] = None
+        self._accion:        Optional[str] = None
+        self._sesion_http:   Optional[httpx.AsyncClient] = None
         self.authenticated = False
 
     # ── WebSocket helpers ───────────────────────────────────────────────────
 
-    async def _open_ws(self) -> None:
+    async def _open_ws(self, token: str = "") -> None:
         """Abre el WebSocket y hace el saludo inicial.
 
         El protocolo de TR no es JSON puro: los mensajes llevan un prefijo de
@@ -60,13 +75,16 @@ class TRClient:
         self._ws = await websockets.connect(WS_URL, extra_headers=WS_HEADERS)
         self._counter = 1
 
-        await self._ws.send(f"connect {WS_VERSION} " + json.dumps({
+        saludo = {
             "locale":          "es",
             "platformId":      "webApp",
             "platformVersion": "chrome - 125.0.0",
             "clientId":        "app.traderepublic.com",
-            "clientVersion":   "3.151.3",
-        }))
+            "clientVersion":   APP_VERSION,
+        }
+        if token:
+            saludo["token"] = token
+        await self._ws.send(f"connect {WS_VERSION} " + json.dumps(saludo))
 
         ack = await asyncio.wait_for(self._ws.recv(), timeout=15)
         if ack != "connected":
@@ -112,70 +130,133 @@ class TRClient:
             # D: un parche sobre una respuesta anterior. Aqui solo interesa la
             # primera respuesta completa, asi que se sigue esperando.
 
-    # ── Authentication (vía WebSocket) ──────────────────────────────────────
+    # ── Autenticación (REST) ────────────────────────────────────────────────
+    #
+    # TR retiró el login del WebSocket: `sub {"type":"login"}` responde
+    # «Unknown topic type: login.31». Ahora se entra por REST, y el segundo
+    # factor ya no es un SMS — o se aprueba desde la app del móvil, o se mete
+    # un código de autenticador, según lo que diga `requiredAction`.
 
-    async def login_init(self, phone: str, pin: str) -> str:
+    def _cabeceras(self) -> dict:
+        return {
+            "Content-Type":     "application/json",
+            "Origin":           "https://app.traderepublic.com",
+            "Referer":          "https://app.traderepublic.com/",
+            "User-Agent":       WS_HEADERS["User-Agent"],
+            "Accept-Language":  "es-ES,es;q=0.9",
+            "X-TR-App-Version": APP_VERSION,
+            "X-Tr-Platform":    "web-pro",
+            "X-TR-Device-Info": DEVICE_INFO,
+        }
+
+    def _http(self) -> httpx.AsyncClient:
+        """Cliente con galletas propias: la sesión de la v2 vive en ellas."""
+        if self._sesion_http is None:
+            self._sesion_http = httpx.AsyncClient(
+                base_url=API_URL, timeout=20, headers=self._cabeceras(), follow_redirects=True
+            )
+        return self._sesion_http
+
+    @staticmethod
+    def _detalle(respuesta) -> str:
+        """Saca el motivo que da TR, que viene en una lista de errores."""
+        try:
+            errores = respuesta.json().get("errors") or []
+        except Exception:
+            return respuesta.text[:200]
+        if not errores:
+            return respuesta.text[:200]
+        primero = errores[0]
+        return primero.get("errorMessage") or primero.get("errorCode") or str(primero)
+
+    async def login_init(self, phone: str, pin: str) -> dict:
+        """Empieza el acceso. Devuelve qué segundo factor toca y cuánto queda.
+
+        A diferencia de antes no devuelve solo un identificador: quien llama
+        necesita saber si tiene que esperar una aprobación en el móvil o pedir
+        un código, porque son dos pantallas distintas.
         """
-        Envía phone+PIN por WS. TR manda OTP al teléfono.
-        Devuelve el processId.
-        """
-        if not self._ws or not self._ws.open:
-            await self._open_ws()
+        r = await self._http().post("/api/v2/auth/web/login", json={"phoneNumber": phone, "pin": pin})
 
-        data = await self._sub({
-            "type":        "login",
-            "phoneNumber": phone,
-            "pin":         pin,
-        })
-        logger.info(f"Login WS response: {data}")
+        if r.status_code >= 400:
+            raise TRAuthError(f"Trade Republic ha rechazado el acceso: {self._detalle(r)}")
 
-        self._process_id = (
-            data.get("processId")
-            or data.get("id")
-            or data.get("process_id")
-        )
+        datos = r.json()
+        self._process_id = datos.get("processId")
         if not self._process_id:
-            raise TRAuthError(f"No se obtuvo processId: {data}")
-        return self._process_id
+            raise TRAuthError(f"TR no ha devuelto processId: {str(datos)[:200]}")
 
-    async def login_verify(self, otp: str) -> str:
-        """
-        Verifica el OTP por WS. Devuelve el sessionToken y autentica la sesión.
-        """
+        accion = datos.get("requiredAction") or datos.get("2fa") or "APP_CONFIRMATION"
+        self._accion = accion
+        logger.info(f"Login iniciado. Segundo factor: {accion}")
+
+        return {
+            "processId":      self._process_id,
+            "requiredAction": accion,
+            "expiresIn":      datos.get("countdownInSeconds"),
+            # Si hay que meter un código, la pantalla lo pide; si no, se espera.
+            "needsCode":      "AUTHENTICATOR" in str(accion).upper(),
+        }
+
+    async def login_verify(self, code: str = "") -> str:
+        """Completa el acceso: con código, o esperando la aprobación del móvil."""
         if not self._process_id:
-            raise TRAuthError("Llama primero a login_init()")
-        if not self._ws or not self._ws.open:
-            raise TRAuthError("Sesión WS perdida. Reinicia el login.")
+            raise TRAuthError("Llama primero a login_init().")
 
-        data = await self._sub({
-            "type":      "tan",
-            "processId": self._process_id,
-            "tan":       otp,
-        })
-        logger.info(f"TAN WS response: {data}")
+        if code:
+            r = await self._http().post(
+                f"/api/v2/auth/web/login/processes/{self._process_id}/authenticator-verification",
+                json={"code": code},
+            )
+            if r.status_code >= 400:
+                raise TRAuthError(f"El código no vale: {self._detalle(r)}")
+        else:
+            await self._esperar_aprobacion()
 
-        token = data.get("sessionToken") or data.get("token")
-        if not token:
-            raise TRAuthError(f"No se obtuvo sessionToken: {data}")
+        # La sesión de la v2 viaja en galletas, no en un token dentro del
+        # cuerpo. Se guarda la que sirva también para el WebSocket.
+        galletas = self._http().cookies
+        self._session_token = galletas.get("tr_session") or galletas.get("sessionToken") or ""
+        if not self._session_token:
+            raise TRAuthError(
+                "El acceso ha ido bien pero no aparece la galleta de sesión. "
+                f"Recibidas: {sorted(galletas.keys())}"
+            )
 
-        self._session_token = token
-
-        # Autenticar la sesión WS para subs de datos
-        await self._sub({"type": "auth", "token": self._session_token})
         self.authenticated = True
-        logger.info("Trade Republic autenticado por WS ✓")
-        return token
+        logger.info("Trade Republic autenticado")
+        return self._session_token
 
-    # ── WebSocket connection (para reconexión tras auth) ────────────────────
+    async def _esperar_aprobacion(self, espera_total: float = 120.0) -> None:
+        """Sondea hasta que apruebas el acceso desde la app de Trade Republic."""
+        limite = asyncio.get_event_loop().time() + espera_total
+        while asyncio.get_event_loop().time() < limite:
+            r = await self._http().get(f"/api/v2/auth/web/login/processes/{self._process_id}")
+            if r.status_code >= 400:
+                raise TRAuthError(f"El acceso se ha caído: {self._detalle(r)}")
+
+            estado = str(r.json().get("status", "")).upper()
+            if estado in ("CONFIRMED", "COMPLETED", "SUCCESS"):
+                return
+            if estado in ("REJECTED", "EXPIRED", "FAILED"):
+                raise TRAuthError(f"El acceso ha quedado en {estado}. Vuelve a empezar.")
+            await asyncio.sleep(2)
+
+        raise TRAuthError("Se ha agotado la espera: no se ha aprobado el acceso desde el móvil.")
+
+    # ── Conexión del WebSocket (para los datos) ─────────────────────────────
 
     async def connect(self) -> None:
-        """Reconecta usando el session token guardado."""
+        """Abre el WebSocket ya autenticado.
+
+        El tema `auth` también desapareció, así que la sesión no se manda
+        después de conectar: tiene que ir dentro del propio saludo.
+        """
         if not self._session_token:
-            raise TRAuthError("Sin session token. Autentícate primero.")
-        await self._open_ws()
-        await self._sub({"type": "auth", "token": self._session_token})
+            raise TRAuthError("Sin sesión. Autentícate primero.")
+        await self._open_ws(token=self._session_token)
         self.authenticated = True
-        logger.info("Reconectado a Trade Republic ✓")
+        logger.info("Conectado a Trade Republic")
 
     # ── Portfolio ───────────────────────────────────────────────────────────
 

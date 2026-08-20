@@ -566,7 +566,8 @@ class AuthInitRequest(BaseModel):
     pin:   str
 
 class AuthVerifyRequest(BaseModel):
-    otp: str
+    # Vacio cuando el segundo factor se aprueba desde la app de TR.
+    otp: str = ""
 
 class TradeItem(BaseModel):
     ticker: str = Field(min_length=1, max_length=24)
@@ -733,8 +734,23 @@ async def auth_init(body: AuthInitRequest, x_aurum_key: str = Header(default="")
     principal = require_key(x_aurum_key)
     require_scope(principal, SCOPE_READ)
     try:
-        process_id = await tr.login_init(body.phone, body.pin)
-        return {"status": "otp_sent", "processId": process_id}
+        # Sobre la sesion DEL USUARIO, no sobre el cliente compartido. Antes se
+        # autenticaba el global mientras /portfolio miraba el del usuario, asi
+        # que el acceso funcionaba y la cartera seguia diciendo que no habias
+        # entrado. Guardar las credenciales cifradas es ademas lo que permite
+        # reconectar sin volver a pedirlas.
+        db.set_broker_credentials(principal.user_email, body.phone, body.pin)
+        inicio = await broker_sessions.begin_login(principal.user_email)
+        # El segundo factor ya no es siempre un SMS: TR decide entre pedir un
+        # codigo de autenticador o que lo apruebes desde su app. La pantalla
+        # necesita saber cual, porque son dos cosas distintas que enseñar.
+        return {
+            "status":         "code_required" if inicio["needsCode"] else "approve_on_phone",
+            "processId":      inicio["processId"],
+            "requiredAction": inicio["requiredAction"],
+            "expiresIn":      inicio["expiresIn"],
+            "needsCode":      inicio["needsCode"],
+        }
     except TRAuthError as e:
         raise HTTPException(400, str(e))
 
@@ -744,8 +760,9 @@ async def auth_verify(body: AuthVerifyRequest, x_aurum_key: str = Header(default
     principal = require_key(x_aurum_key)
     require_scope(principal, SCOPE_READ)
     try:
-        await tr.login_verify(body.otp)
-        await tr.connect()
+        # Sin codigo significa «espero a que lo apruebe en el movil», que es el
+        # camino normal ahora. La peticion se queda abierta mientras sondea.
+        await broker_sessions.complete_login(principal.user_email, body.otp or "")
         await telegram_notify("✅ *Trade Republic autenticado*. AURUM puede ejecutar órdenes.")
         return {"status": "authenticated"}
     except TRAuthError as e:

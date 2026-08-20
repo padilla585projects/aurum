@@ -69,10 +69,14 @@ async def is_authenticated(user_email: str) -> bool:
     return session.authenticated
 
 
-async def begin_login(user_email: str) -> str:
+async def begin_login(user_email: str) -> dict:
     """
-    Primer paso: envía el OTP al teléfono del usuario. Devuelve el processId.
-    Las credenciales se leen descifradas solo aquí y no se registran.
+    Primer paso del acceso al broker. Devuelve qué segundo factor toca.
+
+    Las credenciales se leen descifradas solo aquí y no se registran. Ya no
+    devuelve un processId a secas: desde que TR retiró el SMS, quien llama
+    necesita saber si toca esperar una aprobación en el móvil o pedir un
+    código, porque son dos pantallas distintas.
     """
     creds = db.get_broker_credentials(user_email)
     if creds is None:
@@ -80,13 +84,17 @@ async def begin_login(user_email: str) -> str:
 
     session = await _session_for(user_email)
     async with session.lock:
-        process_id = await session.client.login_init(creds.phone, creds.pin)
+        inicio = await session.client.login_init(creds.phone, creds.pin)
     db.audit("broker_login_started", user_email)
-    return process_id
+    return inicio
 
 
-async def complete_login(user_email: str, otp: str) -> None:
-    """Segundo paso: verifica el OTP y deja la sesión lista para operar."""
+async def complete_login(user_email: str, otp: str = "") -> None:
+    """Segundo paso: completa el acceso y deja la sesión lista para operar.
+
+    Sin código significa que se espera a la aprobación desde la aplicación de
+    Trade Republic, que es el camino habitual ahora.
+    """
     session = await _session_for(user_email)
     async with session.lock:
         await session.client.login_verify(otp)
