@@ -328,9 +328,43 @@ if $CON_TAILSCALE; then
             aviso "  pct exec $VMID -- tailscale serve --bg --https=443 http://127.0.0.1:8000"
         fi
     else
-        aviso "Tailscale no ha quedado conectado. Puedes hacerlo después con:"
-        aviso "  pct exec $VMID -- tailscale up"
+        aviso "Tailscale no ha quedado conectado."
+        TS_PENDIENTE=1
     fi
+fi
+
+# Autorizar exige salir al navegador, asi que es normal que la espera se agote:
+# basta con levantarse a por un cafe. Antes eso dejaba a medias a quien volvia,
+# con un `tailscale up` que por si solo no publica el https — es decir, sin lo
+# unico que hace que el movil pueda hablar con el backend. Se deja hecho un
+# mandato que lo termina entero.
+if $CON_TAILSCALE; then
+    AYUDANTE="/root/aurum-tailscale-${VMID}.sh"
+    cat > "$AYUDANTE" <<AYUDA
+#!/bin/sh
+# Termina de conectar Tailscale en el contenedor $VMID y publica el backend
+# por https, que es lo que hace falta para usar AURUM desde el movil.
+set -e
+V=$VMID
+
+echo ""
+echo "Autoriza el equipo en el enlace que salga aqui debajo:"
+pct exec "\$V" -- tailscale up --hostname aurum-backend
+
+pct exec "\$V" -- tailscale serve --bg --https=443 http://127.0.0.1:8000 || {
+    echo ""
+    echo "No se ha podido publicar por https."
+    echo "Entra en login.tailscale.com -> DNS y activa «HTTPS Certificates»."
+    echo "Despues vuelve a ejecutar esto."
+    exit 1
+}
+
+DOM=\$(pct exec "\$V" -- tailscale status --json | python3 -c 'import sys,json; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))')
+echo ""
+echo "Listo. Esta es la direccion que va en AURUM -> Ajustes -> Backend:"
+echo "   https://\$DOM"
+AYUDA
+    chmod +x "$AYUDANTE"
 fi
 
 [ -n "$DIRECCION" ] || DIRECCION="http://$(pct exec "$VMID" -- hostname -I | awk '{print $1}'):8000"
@@ -399,7 +433,12 @@ if [ -n "$TOKEN" ]; then
     fi
     echo ""
 fi
-if ! $CON_TAILSCALE; then
+if [ "${TS_PENDIENTE:-}" = 1 ]; then
+    echo -e "   ${Y}Falta autorizar Tailscale. Termínalo con un solo mandato:${N}"
+    echo -e "     ${B}sh ${AYUDANTE}${N}"
+    echo -e "   ${Y}Hasta entonces esa dirección es http y el móvil la bloqueará.${N}
+"
+elif ! $CON_TAILSCALE; then
     echo -e "   ${Y}Sin Tailscale, esa dirección es http y solo funciona dentro de tu${N}"
     echo -e "   ${Y}red local. Desde el móvil el navegador la bloqueará.${N}\n"
 fi
