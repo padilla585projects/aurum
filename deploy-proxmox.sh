@@ -367,6 +367,15 @@ else
     aviso "No se han podido crear los tokens. ¿Ya existía uno de antes?"
 fi
 
+# El token solo se mostraba por pantalla, asi que perderlo obligaba a borrar la
+# base de datos y reinstalar. Se guarda ademas en un fichero solo legible por
+# root. Y con AURUM_TOKEN_OCULTO=1 no se imprime: sirve para ejecutar esto sin
+# que el token acabe en un registro, una captura o el historial de la consola.
+FICHERO_TOKEN="/root/aurum-token-${VMID}.txt"
+if [ -n "$TOKEN" ]; then
+    ( umask 077; echo "$TOKEN" > "$FICHERO_TOKEN" )
+fi
+
 # A partir de aqui el contenedor ya es utilizable: aunque falle algo de lo que
 # queda, borrarlo seria peor que dejarlo.
 CREADO=""
@@ -378,9 +387,18 @@ echo -e "${G}   Listo. Abre AURUM → Ajustes → Backend${N}"
 echo -e "${G}  ══════════════════════════════════════════════${N}"
 echo ""
 echo -e "   Dirección:  ${B}${DIRECCION}${N}"
-[ -n "$TOKEN" ] && echo -e "   Token:      ${B}${TOKEN}${N}   (solo lectura)"
-echo ""
-[ -n "$TOKEN" ] && echo -e "   ${Y}Copia el token ahora: no se puede volver a mostrar.${N}\n"
+if [ -n "$TOKEN" ]; then
+    if [ "${AURUM_TOKEN_OCULTO:-}" = 1 ]; then
+        echo -e "   Token:      ${B}guardado en ${FICHERO_TOKEN}${N}   (solo lectura)"
+        echo ""
+        echo -e "   ${Y}Léelo con: cat ${FICHERO_TOKEN}${N}"
+    else
+        echo -e "   Token:      ${B}${TOKEN}${N}   (solo lectura)"
+        echo ""
+        echo -e "   ${Y}Guardado también en ${FICHERO_TOKEN} por si lo pierdes.${N}"
+    fi
+    echo ""
+fi
 if ! $CON_TAILSCALE; then
     echo -e "   ${Y}Sin Tailscale, esa dirección es http y solo funciona dentro de tu${N}"
     echo -e "   ${Y}red local. Desde el móvil el navegador la bloqueará.${N}\n"
