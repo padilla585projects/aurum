@@ -23,7 +23,8 @@ from typing import Optional
 import httpx
 from urllib.parse import quote
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException, status
+from fastapi import FastAPI, Header, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -541,6 +542,20 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(Exception)
+async def fallo_no_previsto(request: Request, exc: Exception) -> JSONResponse:
+    """Convierte una excepcion suelta en una respuesta normal.
+
+    Sin esto la excepcion sube por encima del middleware de CORS, la respuesta
+    sale sin `Access-Control-Allow-Origin` y el navegador la denuncia como un
+    problema de CORS. Es decir: cualquier fallo del servidor se disfraza de otra
+    cosa y manda a buscar donde no es. Se registra entero y se devuelve un 500
+    de verdad, con sus cabeceras.
+    """
+    logger.exception(f"Fallo no previsto en {request.method} {request.url.path}")
+    return JSONResponse(status_code=500, content={"detail": "Error interno del servidor."})
 
 
 

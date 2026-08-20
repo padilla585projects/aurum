@@ -3,7 +3,7 @@ Trade Republic WebSocket client (protocolo móvil/Android).
 
 Flujo de auth:
   1. Conectar WS a wss://api.traderepublic.com
-  2. Handshake JSON  → recibe "connected"
+  2. Saludo `connect 31 {json}` → responde la palabra "connected"
   3. sub login       → TR envía OTP al teléfono, devuelve processId
   4. sub tan         → verifica OTP, devuelve sessionToken
   5. sub auth        → autentica la sesión WS para subs de datos
@@ -20,6 +20,10 @@ from websockets.exceptions import ConnectionClosed
 logger = logging.getLogger(__name__)
 
 WS_URL = "wss://api.traderepublic.com"
+
+# Version del protocolo que se anuncia en el saludo. Comprobado contra el
+# servidor real: 30 y 31 responden igual.
+WS_VERSION = 31
 
 WS_HEADERS = {
     "Origin":     "https://app.traderepublic.com",
@@ -45,20 +49,28 @@ class TRClient:
     # ── WebSocket helpers ───────────────────────────────────────────────────
 
     async def _open_ws(self) -> None:
-        """Abre el WebSocket y hace el handshake inicial."""
+        """Abre el WebSocket y hace el saludo inicial.
+
+        El protocolo de TR no es JSON puro: los mensajes llevan un prefijo de
+        texto. El saludo es `connect <version> {json}` y la respuesta es la
+        palabra `connected`, tal cual. Mandar un objeto JSON con
+        `{"type": "connect"}` no da error — TR sencillamente no contesta, y el
+        cliente se quedaba esperando o parseando lo que llegara despues.
+        """
         self._ws = await websockets.connect(WS_URL, extra_headers=WS_HEADERS)
         self._counter = 1
 
-        await self._ws.send(json.dumps({
-            "type":          "connect",
-            "locale":        "es",
-            "platformId":    "webApp",
-            "clientId":      "app.traderepublic.com",
-            "clientVersion": "1.0.0",
+        await self._ws.send(f"connect {WS_VERSION} " + json.dumps({
+            "locale":          "es",
+            "platformId":      "webApp",
+            "platformVersion": "chrome - 125.0.0",
+            "clientId":        "app.traderepublic.com",
+            "clientVersion":   "3.151.3",
         }))
-        ack = json.loads(await self._ws.recv())
-        if ack.get("type") != "connected":
-            raise TRAuthError(f"WS handshake fallido: {ack}")
+
+        ack = await asyncio.wait_for(self._ws.recv(), timeout=15)
+        if ack != "connected":
+            raise TRAuthError(f"El saludo del WebSocket ha fallado: {ack!r}")
 
     async def _sub(self, payload: dict) -> Any:
         if not self._ws:
@@ -69,16 +81,36 @@ class TRClient:
         return await self._recv_for(sub_id)
 
     async def _recv_for(self, sub_id: str, timeout: float = 20.0) -> Any:
+        """Espera la respuesta de una suscripcion.
+
+        Las tramas son `<id> <codigo> <carga>`, donde el codigo es una letra:
+        A la respuesta completa, D un parche sobre la anterior, C el cierre y
+        E un error. Ademas llegan `echo <marca>` de mantenimiento, que no van
+        dirigidos a nadie. Antes se daba por hecho que todo lo que empezara por
+        el identificador era JSON, asi que la letra acababa dentro del parseo.
+        """
         deadline = asyncio.get_event_loop().time() + timeout
         while True:
             remaining = deadline - asyncio.get_event_loop().time()
             if remaining <= 0:
                 raise TimeoutError(f"Timeout esperando respuesta para sub {sub_id}")
+
             raw = await asyncio.wait_for(self._ws.recv(), timeout=remaining)
-            if raw.startswith(f"{sub_id} E "):
-                raise TROrderError(raw[len(sub_id)+3:])
-            if raw.startswith(f"{sub_id} "):
-                return json.loads(raw[len(sub_id)+1:])
+            partes = raw.split(" ", 2)
+            if partes[0] != sub_id:
+                continue  # de otra suscripcion, o un echo de mantenimiento
+
+            codigo = partes[1] if len(partes) > 1 else ""
+            carga  = partes[2] if len(partes) > 2 else ""
+
+            if codigo == "E":
+                raise TROrderError(carga or "error sin detalle")
+            if codigo == "A":
+                return json.loads(carga)
+            if codigo == "C":
+                raise TRAuthError(f"TR ha cerrado la suscripcion {sub_id} sin responder.")
+            # D: un parche sobre una respuesta anterior. Aqui solo interesa la
+            # primera respuesta completa, asi que se sigue esperando.
 
     # ── Authentication (vía WebSocket) ──────────────────────────────────────
 
