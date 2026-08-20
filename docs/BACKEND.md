@@ -114,7 +114,15 @@ Para desactivarlo más tarde: `tailscale serve --https=443 off`.
 
 Con el backend ya conectado, en la misma pantalla de Ajustes introduce el **teléfono y el PIN** de tu cuenta de Trade Republic.
 
-**Ya no llega un SMS.** Trade Republic cambió su acceso en 2026: ahora te sale un aviso en **su propia aplicación del móvil** para que apruebes la entrada, y AURUM espera hasta que lo hagas. Si tu cuenta usa una aplicación de autenticación, te pedirá ese código en su lugar.
+> ### Ahora mismo esto no se puede completar
+>
+> Trade Republic cambió su acceso en 2026 y lo puso detrás del **sistema anti-bot de AWS**: para entrar por web hace falta una galleta `aws-waf-token` que solo se consigue superando su desafío en un navegador de verdad.
+>
+> **AURUM no lo hace por ti, y es deliberado**: automatizar eso es sortear una detección de bots, y no es algo que este proyecto vaya a incluir. Otros clientes lo resuelven lanzando un navegador con Playwright; aquí no.
+>
+> Lo que sí funciona sin tocar esto: llevar tu cartera a mano. No pierdes nada del asesoramiento.
+>
+> Si el error que ves dice «exige un token anti-bot de AWS», es esto y no un fallo de tu instalación.
 
 Ese paso no se puede automatizar y es deliberado: es lo que impide que nadie entre en tu cuenta solo con haberte robado un fichero.
 

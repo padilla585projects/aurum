@@ -180,7 +180,18 @@ class TRClient:
         r = await self._http().post("/api/v2/auth/web/login", json={"phoneNumber": phone, "pin": pin})
 
         if r.status_code >= 400:
-            raise TRAuthError(f"Trade Republic ha rechazado el acceso: {self._detalle(r)}")
+            detalle = self._detalle(r)
+            # MISSING_REQUIRED_HEADER aqui no es una cabecera que se olvidara:
+            # es la galleta `aws-waf-token` del sistema anti-bot de AWS, que
+            # solo se consigue superando su desafio en un navegador. Decirlo
+            # ahorra buscar durante horas una cabecera que no existe.
+            if "MISSING_REQUIRED_HEADER" in detalle:
+                raise TRAuthError(
+                    "Trade Republic exige un token anti-bot de AWS para entrar por web, "
+                    "y solo se obtiene superando su desafio en un navegador. AURUM no lo "
+                    "hace por ti. Mira docs/BACKEND.md."
+                )
+            raise TRAuthError(f"Trade Republic ha rechazado el acceso: {detalle}")
 
         datos = r.json()
         self._process_id = datos.get("processId")
