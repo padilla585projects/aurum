@@ -21,6 +21,22 @@ Eso no puede vivir en la nube: significaría que tus credenciales de banca está
 
 ## 1. Instalarlo
 
+### Si tienes Proxmox *(lo más fácil, y lo que recomiendo)*
+
+Una línea en la consola del **host** de Proxmox, como root. No hace falta descargar nada antes:
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/padilla585projects/aurum/main/deploy-proxmox.sh)"
+```
+
+Te pregunta cuatro cosas —todas con respuesta por defecto, puedes darle a intro— y hace el resto: crea el contenedor, instala el backend, lo deja arrancando solo y, si le dices que sí, conecta Tailscale y lo publica por https para que funcione desde el móvil.
+
+Ventaja de esta vía: el contenedor está siempre encendido, así que el backend no depende de que tu ordenador lo esté.
+
+Si algo falla a mitad, deshace el contenedor que acababa de crear; no te deja restos que limpiar. Y si te levantas mientras espera a que autorices Tailscale, no pasa nada: deja hecho un mandato que lo termina.
+
+### En tu propio ordenador
+
 Descarga el proyecto y ejecuta, dentro de la carpeta `backend`:
 
 **Windows**
@@ -123,7 +139,9 @@ Aun así, es dinero real. Pruébalo primero con importes mínimos.
 | «Token inválido o revocado» | El token no es el que corresponde a ese backend. Si lo perdiste, borra `backend/aurum.db` y reinstala. |
 | «Ese token no tiene permiso para esta operación» | Estás usando el de solo lectura en algo que escribe. Es lo esperado; ver el apartado 1. |
 | «No autenticado en Trade Republic» | Falta completar el paso 3, o la sesión ha caducado. Vuelve a introducir el código. |
-| El backend deja de responder al apagar el PC | Es lo normal: corre en tu máquina. Si lo quieres siempre disponible, instálalo en un equipo que esté siempre encendido. |
+| El backend deja de responder al apagar el PC | Es lo normal: corre en tu máquina. Si lo quieres siempre disponible, instálalo en un equipo que esté siempre encendido — con Proxmox, la vía del apartado 1. |
+| Tailscale se quedó sin autorizar | Ejecuta `sh /root/aurum-tailscale-<id>.sh` en el host de Proxmox: autoriza, publica por https y te dice la dirección. |
+| «No se ha podido publicar por https» | Falta activar los certificados: entra en login.tailscale.com → DNS y enciende *HTTPS Certificates*. Luego repite el mandato anterior. |
 
 ## Qué guarda, y dónde
 
