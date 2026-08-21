@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import {
   PieChart, Pie, Cell, Tooltip, ResponsiveContainer,
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Legend,
@@ -35,6 +35,8 @@ import { MODELO_DE_AJUSTES, callAnthropic, callProvider } from './nexus/provider
 import * as store from './store/state';
 import * as compartido from './store/captura-compartida';
 import * as atras from './store/atras';
+import { calcularAvisos } from './nexus/avisos';
+import { REVISION_SYSTEM } from './nexus/prompts';
 import { C, PIE_PAL } from './theme';
 import { useSession } from './store/session-context';
 import { createInvite } from './store/session';
@@ -1257,6 +1259,114 @@ function calcAurumScore(portfolio: Position[], profile: string) {
   };
 }
 
+/**
+ * Revisión: ¿se parece la cartera a lo que dijiste que querías?
+ *
+ * La puntuación de aquí abajo compara contra la plantilla del perfil de riesgo,
+ * que no sabe nada de tus planes. Esto compara contra lo que escribiste. Los
+ * números van calculados de antemano para que la IA no invente ninguno: lo que
+ * se le pide es el juicio, no la aritmética.
+ */
+function RevisionCard({ portfolio, profile, userProfile }: {
+  portfolio: Position[];
+  profile: string;
+  userProfile: UserProfile;
+}) {
+  const [texto,    setTexto]    = useState<string|null>(null);
+  const [cargando, setCargando] = useState(false);
+  const [error,    setError]    = useState<string|null>(null);
+
+  const avisos = useMemo(
+    () => calcularAvisos(portfolio, profile, userProfile.notes || ''),
+    [portfolio, profile, userProfile.notes],
+  );
+
+  if (!portfolio.length) return null;
+
+  const revisar = async () => {
+    setCargando(true); setError(null);
+    try {
+      const drift  = detectDrift(portfolio, profile);
+      const riesgo = portfolioRiskScore(portfolio);
+      const fiscal = taxLossOpportunities(portfolio);
+      const valor  = portfolio.reduce((a, p) => a + p.shares * p.currentPrice, 0);
+      const coste  = portfolio.reduce((a, p) => a + p.shares * p.avgPrice, 0);
+
+      const hechos = [
+        `Valor actual: ${Math.round(valor).toLocaleString('es-ES')} EUR`,
+        `Invertido: ${Math.round(coste).toLocaleString('es-ES')} EUR`,
+        `Resultado: ${coste ? (((valor - coste) / coste) * 100).toFixed(1) : '0'}%`,
+        '',
+        formatDrift(drift),
+        '',
+        `Riesgo de la cartera: ${riesgo.score}/100`,
+        '',
+        formatTaxLoss(fiscal),
+        '',
+        'Posiciones:',
+        ...portfolio.map(p => `- ${p.ticker} (${p.name}): ${p.shares} x ${p.currentPrice}€, comprado a ${p.avgPrice}€`),
+      ].join('\n');
+
+      const planes = (userProfile.notes || '').trim();
+      const pregunta = planes
+        ? `Mis planes:\n${planes}\n\nMis números:\n${hechos}`
+        : `No he escrito mis planes todavía.\n\nMis números:\n${hechos}`;
+
+      const respuesta = await callProvider(
+        { provider: 'gemini', model: MODELO_DE_AJUSTES,
+          fallback: { provider: 'anthropic', model: 'claude-sonnet-5' } },
+        [{ role: 'user', content: pregunta }],
+        REVISION_SYSTEM,
+        undefined, 1500, false,
+      );
+      setTexto(respuesta);
+      void sSet('aurum-ultima-revision', { fecha: Date.now(), texto: respuesta });
+    } catch (e: any) {
+      setError(String(e?.message ?? e));
+    } finally {
+      setCargando(false);
+    }
+  };
+
+  return (
+    <div style={{ background:C.surf2, border:`1px solid ${C.border}`, borderRadius:13, padding:'14px 18px', marginBottom:14 }}>
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:12, flexWrap:'wrap' }}>
+        <div>
+          <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.1em', fontWeight:600, color:C.goldL }}>
+            ¿Lo estoy haciendo bien?
+          </div>
+          <div style={{ fontSize:'.68em', color:C.muted, marginTop:2 }}>
+            AURUM compara tu cartera con lo que dijiste que querías.
+          </div>
+        </div>
+        <button onClick={revisar} disabled={cargando}
+          style={{ background: cargando ? `${C.gold}44` : C.gold, border:'none', borderRadius:9, padding:'8px 16px', color:'#07070e', fontWeight:600, cursor: cargando ? 'default' : 'pointer', fontSize:'.76em', fontFamily:"'Sora',sans-serif", whiteSpace:'nowrap' }}>
+          {cargando ? 'Revisando…' : 'Revisar ahora'}
+        </button>
+      </div>
+
+      {avisos.length > 0 && (
+        <div style={{ marginTop:12, display:'flex', flexDirection:'column', gap:8 }}>
+          {avisos.map(a => (
+            <div key={a.id} style={{ background: a.gravedad === 'atencion' ? `${C.gold}0e` : C.surf, border:`1px solid ${a.gravedad === 'atencion' ? C.gold + '44' : C.border}`, borderRadius:9, padding:'9px 12px' }}>
+              <div style={{ fontSize:'.74em', color:C.text, fontWeight:600 }}>{a.titulo}</div>
+              <div style={{ fontSize:'.68em', color:C.muted, marginTop:3, lineHeight:1.5 }}>{a.detalle}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {error && <div style={{ marginTop:10, fontSize:'.72em', color:C.red }}>{error}</div>}
+
+      {texto && (
+        <div style={{ marginTop:12, paddingTop:12, borderTop:`1px solid ${C.border}`, fontSize:'.76em', color:C.text, lineHeight:1.65 }}>
+          <Md text={texto} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AurumScoreCard({ portfolio, profile }: { portfolio: Position[]; profile: string }) {
   const [open, setOpen] = useState(false);
   const sc = calcAurumScore(portfolio, profile);
@@ -1398,7 +1508,7 @@ function GoalsCard({ totalVal }: { totalVal: number }) {
   );
 }
 
-function PortfolioTab({ portfolio, setPortfolio, profile }:{ portfolio:Position[]; setPortfolio:(p:Position[])=>void; profile:string }) {
+function PortfolioTab({ portfolio, setPortfolio, profile, userProfile }:{ portfolio:Position[]; setPortfolio:(p:Position[])=>void; profile:string; userProfile:UserProfile }) {
   const empty = { ticker:'', name:'', shares:'', avgPrice:'', currentPrice:'' };
   const [form, setForm]       = useState(empty);
   const [adding, setAdding]   = useState(false);
@@ -1644,6 +1754,7 @@ function PortfolioTab({ portfolio, setPortfolio, profile }:{ portfolio:Position[
         {statCard('Rendimiento', `${pnlPct>=0?'+':''}${pnlPct.toFixed(2)}%`, pnlPct>=0?C.green:C.red)}
       </div>
       {/* Score AURUM */}
+      <RevisionCard portfolio={portfolio} profile={profile} userProfile={userProfile} />
       <AurumScoreCard portfolio={portfolio} profile={profile} />
       {/* Goals tracker */}
       <GoalsCard totalVal={totalVal} />
@@ -4625,7 +4736,7 @@ export default function App() {
       {/* Contenido */}
       <div style={{ flex:1, overflow:'hidden', position:'relative', paddingBottom:'calc(58px + env(safe-area-inset-bottom, 0px))' }}>
         {tab==='chat'      && <ChatTab profile={profile} portfolio={portfolio} userProfile={userProfile} />}
-        {tab==='portfolio' && <PortfolioTab portfolio={portfolio} setPortfolio={setPortfolio} profile={profile} />}
+        {tab==='portfolio' && <PortfolioTab portfolio={portfolio} setPortfolio={setPortfolio} profile={profile} userProfile={userProfile} />}
         {tab==='invest'    && <InvestTab profile={profile} portfolio={portfolio} setPortfolio={setPortfolio} userProfile={userProfile} onNavigate={setTab} />}
         {tab==='research'  && <ResearchTab portfolio={portfolio} profile={profile} />}
         {tab==='control'   && <ControlTab />}
