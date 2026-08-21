@@ -2745,15 +2745,17 @@ function InvestTab({ profile, portfolio, setPortfolio, userProfile, onNavigate }
         setTradeLog(log.map(l => ({ ...l, status: 'error' as const, msg: e.message })));
       }
     } else {
-      // ── Sin backend: registro local + guía manual ────────────────
-      const newPositions: Position[] = proposal.trades.map((t, i) => ({
-        id: Date.now() + i,
-        ticker: t.ticker, name: t.name,
-        shares: 1, avgPrice: t.amount, currentPrice: t.amount,
-      }));
-      const updated = [...portfolio, ...newPositions];
-      setPortfolio(updated);
-      await sSet('aurum-portfolio', updated);
+      // ── Sin backend: solo la guía manual ─────────────────────────
+      //
+      // Antes esto apuntaba las posiciones solo, y mal: guardaba el importe en
+      // euros como si fuera el precio de una participación —«1 participación a
+      // 500 €»— y encima las daba por compradas antes de que nadie hubiera
+      // comprado nada. La cartera quedaba inventada, que para un asesor es
+      // peor que no tener cartera.
+      //
+      // Lo que se apunta ahora es la lista de lo que hay que hacer. Cuando
+      // estén hechas de verdad, la cartera se actualiza volviendo a importar
+      // la captura del broker, que es donde están los números reales.
       setTradeLog(proposal.trades.map(t => ({ ticker: t.ticker, status: 'pending' as const })));
     }
     setPhase('done');
@@ -2938,6 +2940,11 @@ function InvestTab({ profile, portfolio, setPortfolio, userProfile, onNavigate }
                   /* ── Sin backend: guía manual ── */
                   <div style={{ padding:'16px 20px', background:`${C.blue}0c`, border:`1px solid ${C.blue}33`, borderRadius:12 }}>
                     <div style={{ fontSize:'.88em', fontWeight:600, color:C.blue, marginBottom:8 }}>Plan listo — ejecútalo en Trade Republic</div>
+                    <div style={{ fontSize:'.72em', color:C.muted, marginBottom:10, lineHeight:1.55 }}>
+                      Tu cartera no se ha tocado: estas órdenes todavía no existen. Cuando las
+                      hayas hecho, vuelve a <strong style={{ color:C.text }}>importar la captura</strong> de
+                      tu broker en Cartera y quedará con los números reales.
+                    </div>
                     <div style={{ display:'flex', flexDirection:'column', gap:7, marginTop:6 }}>
                       {proposal.trades.map((t, i) => (
                         <div key={i} style={{ fontSize:'.75em', color:C.text, display:'flex', gap:8 }}>
