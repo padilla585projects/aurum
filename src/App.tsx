@@ -730,6 +730,29 @@ function ImportModal({ onImport, onClose }:{ onImport:(p:Position[])=>void; onCl
     e.target.value = '';
   };
 
+  // Recortar la pantalla deja la imagen en el portapapeles, así que el gesto
+  // natural es pegarla aquí — no guardarla en un fichero y volver a buscarla.
+  // Esto es lo que sustituye a integrar un navegador dentro de la aplicación:
+  // el navegador se queda donde está y solo viaja la captura.
+  useEffect(() => {
+    const alPegar = (e: ClipboardEvent) => {
+      const archivo = Array.from(e.clipboardData?.items ?? [])
+        .find(i => i.type.startsWith('image/'))?.getAsFile();
+      if (!archivo) return;
+      e.preventDefault();
+      const lector = new FileReader();
+      lector.onload = () => {
+        const resultado = lector.result as string;
+        setImage({ b64: resultado.split(',')[1], type: archivo.type, preview: resultado });
+        setTab('image');
+        setError('');
+      };
+      lector.readAsDataURL(archivo);
+    };
+    window.addEventListener('paste', alPegar);
+    return () => window.removeEventListener('paste', alPegar);
+  }, []);
+
   const parse = async () => {
     setParsing(true); setError(''); setPreview(null);
     try {
@@ -753,7 +776,7 @@ function ImportModal({ onImport, onClose }:{ onImport:(p:Position[])=>void; onCl
         <div style={{ padding:'16px 20px', borderBottom:`1px solid ${C.border}`, display:'flex', alignItems:'center', justifyContent:'space-between' }}>
           <div>
             <div style={{ fontSize:'.88em', fontWeight:600, color:C.goldL }}>Importar cartera con IA</div>
-            <div style={{ fontSize:'.65em', color:C.muted, marginTop:2 }}>Claude lee tu broker y extrae las posiciones automáticamente</div>
+            <div style={{ fontSize:'.65em', color:C.muted, marginTop:2 }}>Pega una captura con Ctrl+V, o el texto de tus posiciones</div>
           </div>
           <button onClick={onClose} style={{ background:'transparent', border:'none', color:C.muted, cursor:'pointer', fontSize:'1.1em' }}>✕</button>
         </div>
