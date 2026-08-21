@@ -1627,7 +1627,38 @@ function PortfolioTab({ portfolio, setPortfolio, profile }:{ portfolio:Position[
             </div>
           )}
           {portfolio.length===0
-            ? <div style={{ padding:'36px', textAlign:'center', color:C.muted, fontSize:'.82em' }}>Sin posiciones. Añade tus inversiones para hacer seguimiento.</div>
+            ? (
+              /* La pantalla vacía decía «añade tus inversiones» y nada más, así
+                 que el único camino visible era teclear cinco campos por
+                 posición. Importar desde una captura o pegando texto ya estaba
+                 hecho, pero escondido tras un icono: aquí es donde hay que
+                 ofrecerlo, que es cuando hace falta. */
+              <div style={{ padding:'40px 24px', textAlign:'center' }}>
+                <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.3em', color:C.goldL, marginBottom:6 }}>
+                  Trae tu cartera
+                </div>
+                <div style={{ fontSize:'.78em', color:C.muted, marginBottom:20, lineHeight:1.6, maxWidth:400, margin:'0 auto 20px' }}>
+                  No hace falta teclearla. Haz una captura de tu broker —o copia
+                  las posiciones y pégalas— y la IA las extrae sola.
+                </div>
+
+                <div style={{ display:'flex', gap:10, justifyContent:'center', flexWrap:'wrap' }}>
+                  <button onClick={()=>setImporting(true)}
+                    style={{ background:C.gold, border:'none', borderRadius:9, padding:'10px 20px', color:'#07070e', fontWeight:600, cursor:'pointer', fontSize:'.8em', fontFamily:"'Sora',sans-serif" }}>
+                    ✨ Importar automáticamente
+                  </button>
+                  <button onClick={()=>setAdding(true)}
+                    style={{ background:'transparent', border:`1px solid ${C.border2}`, borderRadius:9, padding:'10px 20px', color:C.muted, cursor:'pointer', fontSize:'.8em', fontFamily:"'Sora',sans-serif" }}>
+                    Añadir una a mano
+                  </button>
+                </div>
+
+                <div style={{ fontSize:'.68em', color:C.faint, marginTop:18, lineHeight:1.6, maxWidth:420, margin:'18px auto 0' }}>
+                  Si usas Trade Republic, hazlo desde su web: su aplicación del móvil
+                  no deja capturar pantalla.
+                </div>
+              </div>
+            )
             : <>
                 <div style={{ display:'grid', gridTemplateColumns:'80px 1fr 60px 75px 75px 90px 60px 30px 36px', padding:'7px 16px', fontSize:'.6em', color:C.muted, letterSpacing:'1px', textTransform:'uppercase', borderBottom:`1px solid ${C.border}` }}>
                   {['Ticker','Nombre','Acc.','P.Compra','P.Actual','P&L','','🔔',''].map((h,i)=><span key={i}>{h}</span>)}
