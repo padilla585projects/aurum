@@ -61,9 +61,22 @@ class TRClient:
         self._accion:        Optional[str] = None
         self._sesion_http:   Optional[httpx.AsyncClient] = None
         self._sec_acc_no:    Optional[str] = None
+        self._galletas:      dict = {}
         self.authenticated = False
 
     # ── WebSocket helpers ───────────────────────────────────────────────────
+
+    def _cabeceras_ws(self) -> dict:
+        """Cabeceras del saludo del WebSocket, con la sesión si la hay.
+
+        Un navegador manda solas las galletas del dominio al abrir un
+        WebSocket, y de ahí saca TR quién eres. Aquí hay que ponerlas a mano:
+        `websockets` no lleva galletero.
+        """
+        cabeceras = dict(WS_HEADERS)
+        if self._galletas:
+            cabeceras["Cookie"] = "; ".join(f"{k}={v}" for k, v in self._galletas.items())
+        return cabeceras
 
     async def _open_ws(self, token: str = "") -> None:
         """Abre el WebSocket y hace el saludo inicial.
@@ -74,7 +87,7 @@ class TRClient:
         `{"type": "connect"}` no da error — TR sencillamente no contesta, y el
         cliente se quedaba esperando o parseando lo que llegara despues.
         """
-        self._ws = await websockets.connect(WS_URL, extra_headers=WS_HEADERS)
+        self._ws = await websockets.connect(WS_URL, extra_headers=self._cabeceras_ws())
         self._counter = 1
 
         saludo = {
@@ -248,54 +261,56 @@ class TRClient:
         desafío hecho justamente para distinguir personas de programas. Aquí no
         se resuelve nada: la persona entra como cualquier día y cede su sesión.
 
-        El anti-bot protege *entrar*, no *usar* una sesión ya abierta — por eso
-        esto funciona sin sortear nada.
+        Se valida abriendo el WebSocket y pidiendo el efectivo, que es lo que
+        de verdad se va a usar después. Comprobarlo contra un endpoint REST
+        cualquiera diría poco: lo que importa es si se puede leer la cuenta.
         """
         trozos = _parsear_galletas(galletas)
         if not trozos:
             raise TRAuthError(
-                "No reconozco ninguna galleta en lo que has pegado. Copia el valor de "
-                "`tr_session`, o la línea entera de cabecera `Cookie`."
+                "No reconozco ninguna galleta en lo que has pegado. Copia la petición "
+                "como cURL, o la línea entera de cabecera `Cookie`."
             )
+
+        self._galletas = trozos
+        # Solo los nombres: los valores son la credencial y no se registran.
+        logger.info(f"Sesión recibida con galletas: {sorted(trozos)}")
 
         cliente = self._http()
         for nombre, valor in trozos.items():
             cliente.cookies.set(nombre, valor, domain=".traderepublic.com", path="/")
 
-        r = await cliente.get("/api/v1/auth/web/session")
-        if r.status_code == 401:
-            raise TRAuthError(
-                "Trade Republic no acepta esa sesión: o ha caducado, o no es la buena. "
-                "Vuelve a entrar en su web y cópiala otra vez."
-            )
-        if r.status_code >= 400:
-            raise TRAuthError(f"Trade Republic ha rechazado la sesión: {self._detalle(r)}")
+        await self.disconnect()
+        await self._open_ws()
 
-        # El WebSocket se autentica con la misma sesión, dentro del saludo.
-        self._session_token = trozos.get("tr_session") or next(iter(trozos.values()))
+        try:
+            datos = await self._sub({"type": "cash"})
+        except TROrderError as e:
+            self._galletas = {}
+            if "AUTHENTICATION" in str(e).upper() or "TOKEN" in str(e).upper():
+                raise TRAuthError(
+                    "Trade Republic no acepta esa sesión: o ha caducado, o falta alguna "
+                    "galleta. Vuelve a copiar la petición entera como cURL."
+                ) from e
+            raise TRAuthError(f"Trade Republic ha rechazado la sesión: {e}") from e
+
+        self._session_token = trozos.get("tr_session", "")
         self.authenticated = True
         logger.info("Sesión de Trade Republic adoptada")
-
-        try:
-            return r.json()
-        except Exception:
-            return {}
+        return {"cash": datos}
 
     async def renovar_sesion(self) -> bool:
-        """Toca la sesión para que no caduque. Devuelve si sigue viva."""
-        if not self._session_token:
+        """Comprueba que la sesión sigue viva. Devuelve si se puede seguir."""
+        if not self._galletas:
             return False
         try:
-            r = await self._http().get("/api/v1/auth/web/session")
+            await self.ensure_connected()
+            await self._sub({"type": "cash"})
+            return True
         except Exception as e:
-            logger.warning(f"No se ha podido renovar la sesión de TR: {e}")
-            return False
-
-        viva = r.status_code < 400
-        if not viva:
             self.authenticated = False
-            logger.warning("La sesión de Trade Republic ha caducado.")
-        return viva
+            logger.warning(f"La sesión de Trade Republic ya no vale: {e}")
+            return False
 
     async def _esperar_aprobacion(self, espera_total: float = 120.0) -> None:
         """Sondea hasta que apruebas el acceso desde la app de Trade Republic."""
@@ -322,9 +337,9 @@ class TRClient:
         El tema `auth` también desapareció, así que la sesión no se manda
         después de conectar: tiene que ir dentro del propio saludo.
         """
-        if not self._session_token:
+        if not self._galletas:
             raise TRAuthError("Sin sesión. Autentícate primero.")
-        await self._open_ws(token=self._session_token)
+        await self._open_ws()
         self.authenticated = True
         logger.info("Conectado a Trade Republic")
 

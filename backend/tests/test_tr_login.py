@@ -14,7 +14,7 @@ import asyncio
 import httpx
 import pytest
 
-from tr_client import TRAuthError, TRClient
+from tr_client import TRAuthError, TROrderError, TRClient
 
 
 def cliente_con(manejador) -> TRClient:
@@ -145,43 +145,72 @@ class TestSesionCedida:
         assert _parsear_galletas('  " tr_session = abc123 ; b=2 "  ') == {"tr_session": "abc123", "b": "2"}
 
     def test_una_sesion_valida_deja_el_cliente_listo(self):
+        """Se valida leyendo la cuenta, que es lo que se va a usar después."""
+        tr = TRClient()
         visto = {}
 
-        def manejador(peticion: httpx.Request) -> httpx.Response:
-            visto["url"] = str(peticion.url)
-            visto["cookie"] = peticion.headers.get("cookie", "")
-            return respuesta({"userId": "u-1"})
+        async def abrir_falso(token=""):
+            visto["cabeceras"] = tr._cabeceras_ws()
 
-        tr = cliente_con(manejador)
-        asyncio.run(tr.usar_sesion("tr_session=abc123"))
+        async def sub_falso(carga):
+            visto["tema"] = carga["type"]
+            return {"availableCash": 100.0}
+
+        tr._open_ws, tr._sub = abrir_falso, sub_falso
+        asyncio.run(tr.usar_sesion("tr_session=abc123; tr_claims=def456"))
 
         assert tr.authenticated is True
-        assert tr._session_token == "abc123"
-        assert visto["url"].endswith("/api/v1/auth/web/session")
-        assert "tr_session=abc123" in visto["cookie"]
+        # Las galletas viajan en el saludo, que es de donde TR saca quién eres.
+        assert "tr_session=abc123" in visto["cabeceras"]["Cookie"]
+        assert "tr_claims=def456" in visto["cabeceras"]["Cookie"]
+        assert visto["tema"] == "cash"
 
     def test_una_sesion_caducada_se_dice_con_todas_las_letras(self):
-        tr = cliente_con(lambda p: respuesta({"errors": [{"errorCode": "AUTHENTICATION_ERROR"}]}, 401))
+        tr = TRClient()
+
+        async def abrir_falso(token=""):
+            pass
+
+        async def sub_falso(carga):
+            raise TROrderError('{"errors":[{"errorCode":"AUTHENTICATION_ERROR"}]}')
+
+        tr._open_ws, tr._sub = abrir_falso, sub_falso
         with pytest.raises(TRAuthError, match="caducado"):
             asyncio.run(tr.usar_sesion("tr_session=vieja"))
         assert tr.authenticated is False
 
     def test_pegar_cualquier_cosa_no_pasa_por_valido(self):
-        tr = cliente_con(lambda p: respuesta({}))
+        tr = TRClient()
         with pytest.raises(TRAuthError, match="reconozco"):
             asyncio.run(tr.usar_sesion("   "))
 
     def test_renovar_avisa_cuando_la_sesion_ha_muerto(self):
-        tr = cliente_con(lambda p: respuesta({"errors": [{"errorCode": "AUTHENTICATION_ERROR"}]}, 401))
-        tr._session_token = "abc"
+        tr = TRClient()
+        tr._galletas = {"tr_session": "abc"}
         tr.authenticated = True
+
+        async def caido():
+            raise TRAuthError("sin sesión")
+
+        tr.ensure_connected = caido
         assert asyncio.run(tr.renovar_sesion()) is False
         assert tr.authenticated is False
 
     def test_renovar_confirma_cuando_sigue_viva(self):
-        tr = cliente_con(lambda p: respuesta({"ok": True}))
-        tr._session_token = "abc"
+        tr = TRClient()
+        tr._galletas = {"tr_session": "abc"}
+
+        async def conectado():
+            pass
+
+        async def sub_falso(carga):
+            return {"availableCash": 10.0}
+
+        tr.ensure_connected, tr._sub = conectado, sub_falso
         assert asyncio.run(tr.renovar_sesion()) is True
+
+    def test_sin_sesion_no_se_dice_que_sigue_viva(self):
+        assert asyncio.run(TRClient().renovar_sesion()) is False
 
 
 class TestPegarComoSea:
