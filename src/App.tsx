@@ -36,6 +36,7 @@ import * as store from './store/state';
 import * as compartido from './store/captura-compartida';
 import * as atras from './store/atras';
 import { calcularAvisos } from './nexus/avisos';
+import { CLAVE_OPERACIONES, balanceDelEjercicio, bloqueOperaciones, normalizarOperacion, type Operacion } from './nexus/operaciones';
 import { CLAVE_EFECTIVO, CLAVE_PLANES, aNumero, aportacionMensual, bloquePlanes, normalizarPlan, type PlanInversion } from './nexus/planes';
 import { REVISION_SYSTEM } from './nexus/prompts';
 import { C, PIE_PAL } from './theme';
@@ -694,6 +695,20 @@ Responde SOLO con JSON válido, sin texto y sin bloques de código:
 
 Si no hay posiciones, responde: {"posiciones":[],"efectivo":0}`;
 
+const OPERACIONES_SYSTEM = `Extrae del historial de movimientos las operaciones de VENTA ya ejecutadas.
+
+Devuelve SOLO un array JSON, sin explicaciones ni bloques de código:
+[{"ticker":"","name":"Amazon.com","fecha":"2026-03-12","importe":250.40,"resultado":-128.50}]
+
+- **name**: qué se vendió, tal como aparece. Nunca puede faltar.
+- **ticker**: opcional. Si la pantalla no lo enseña, cadena vacía. No te lo inventes.
+- **fecha**: la de la operación. Devuélvela como aaaa-mm-dd si puedes; si no, cópiala tal cual.
+- **importe**: el dinero que se ingresó con la venta.
+- **resultado**: la ganancia o pérdida de esa venta. Negativo si fue pérdida. Si la pantalla no lo dice, pon 0.
+- Incluye SOLO ventas. Ignora compras, aportaciones, dividendos, intereses y traspasos.
+- Los importes pueden venir en formato español (1.250,75 €). Devuélvelos como número.
+- Si no hay ninguna venta, devuelve [].`;
+
 const PLANES_SYSTEM = `Extrae los planes de inversión periódicos de la imagen o el texto.
 
 Cada fila de la lista es un plan. Suele traer: el nombre de lo que se compra, cada cuánto, y el importe de cada compra.
@@ -707,6 +722,32 @@ Devuelve SOLO un array JSON, sin explicaciones ni bloques de código:
 - **frecuencia**: "semanal", "quincenal", "mensual" o "trimestral", según lo que ponga la fila.
 - Incluye TODAS las filas de la lista, aunque se repita el mismo importe.
 - Si de verdad no hay ninguna lista de planes, devuelve [].`;
+
+/** Lee las ventas ya hechas de una captura del historial del broker. */
+async function parseOperacionesWithAI(imageB64: string, imageType: string): Promise<Operacion[]> {
+  const raw = await callProvider(
+    { provider: 'gemini', model: MODELO_DE_AJUSTES,
+      fallback: { provider: 'anthropic', model: 'claude-sonnet-5' } },
+    [{ role:'user', content: [
+      { type:'image', source:{ type:'base64', media_type:imageType, data:imageB64 } },
+      { type:'text', text:'Extrae las ventas ya ejecutadas de este historial.' },
+    ] }],
+    OPERACIONES_SYSTEM,
+    undefined, 2048, false,
+  );
+
+  const json = raw.replace(/```[a-z]*\n?|```/g, '').trim();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    throw new Error('No he podido leer los movimientos de esa imagen.');
+  }
+  if (!Array.isArray(parsed)) return [];
+  return parsed
+    .map((o, i) => normalizarOperacion(o as Record<string, unknown>, i))
+    .filter((o): o is Operacion => o !== null);
+}
 
 /** Lee los planes periódicos de una captura del broker, igual que la cartera. */
 async function parsePlanesWithAI(
@@ -1546,6 +1587,138 @@ function PlanesCard({ planes, setPlanes }: {
   );
 }
 
+/**
+ * Ventas ya hechas y su cuenta fiscal.
+ *
+ * La cartera solo guarda lo que tienes ahora, así que lo vendido desaparecía.
+ * Sin esto, decir «vender esto te ahorra 24 €» es una suposición: una pérdida
+ * solo ahorra si hay ganancias del mismo año contra las que compensarla.
+ */
+function OperacionesCard({ operaciones, setOperaciones }: {
+  operaciones: Operacion[];
+  setOperaciones: (o: Operacion[]) => void;
+}) {
+  const [importando, setImportando] = useState(false);
+  const [cargando,   setCargando]   = useState(false);
+  const [error,      setError]      = useState<string|null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const ejercicio = new Date().getFullYear();
+  const balance = useMemo(() => balanceDelEjercicio(operaciones, ejercicio), [operaciones, ejercicio]);
+
+  const guardar = async (siguientes: Operacion[]) => {
+    setOperaciones(siguientes);
+    await sSet(CLAVE_OPERACIONES, siguientes);
+  };
+
+  const leer = async (b64: string, tipo: string) => {
+    setCargando(true); setError(null);
+    try {
+      const leidas = await parseOperacionesWithAI(b64, tipo);
+      if (!leidas.length) {
+        setError('No he encontrado ventas ahí. Tiene que ser la pantalla de movimientos o actividad del broker.');
+        return;
+      }
+      await guardar([...operaciones, ...leidas]);
+      setImportando(false);
+    } catch (e: any) {
+      setError(String(e?.message ?? e));
+    } finally {
+      setCargando(false);
+    }
+  };
+
+  const desdeFichero = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0]; if (!f) return;
+    const lector = new FileReader();
+    lector.onload = () => { const r = lector.result as string; void leer(r.split(',')[1], f.type); };
+    lector.readAsDataURL(f);
+    e.target.value = '';
+  };
+
+  useEffect(() => {
+    if (!importando) return;
+    const alPegar = (e: ClipboardEvent) => {
+      const archivo = Array.from(e.clipboardData?.items ?? [])
+        .find(i => i.type.startsWith('image/'))?.getAsFile();
+      if (!archivo) return;
+      e.preventDefault();
+      const lector = new FileReader();
+      lector.onload = () => { const r = lector.result as string; void leer(r.split(',')[1], archivo.type); };
+      lector.readAsDataURL(archivo);
+    };
+    window.addEventListener('paste', alPegar);
+    return () => window.removeEventListener('paste', alPegar);
+  }, [importando, operaciones]);
+
+  const delAno = operaciones.filter(o => Number(o.fecha.slice(0, 4)) === ejercicio);
+
+  return (
+    <div style={{ background:C.surf2, border:`1px solid ${C.border}`, borderRadius:13, padding:'14px 18px', marginBottom:14 }}>
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:12, flexWrap:'wrap' }}>
+        <div>
+          <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.1em', fontWeight:600, color:C.goldL }}>
+            Ventas de {ejercicio}
+          </div>
+          <div style={{ fontSize:'.68em', color:C.muted, marginTop:2 }}>
+            {delAno.length
+              ? `Plusvalías ${balance.plusvalias.toLocaleString('es-ES')} € · minusvalías ${balance.minusvalias.toLocaleString('es-ES')} €`
+              : 'Lo que ya has vendido. Hace falta para saber si compensar una pérdida te ahorra algo.'}
+          </div>
+        </div>
+        <button onClick={() => { setImportando(v => !v); setError(null); }}
+          style={{ background: importando ? 'transparent' : 'rgba(201,168,76,.12)', border:`1px solid ${importando ? C.border : C.gold + '44'}`, color: importando ? C.muted : C.gold, borderRadius:8, padding:'6px 14px', cursor:'pointer', fontSize:'.74em', fontFamily:"'Sora',sans-serif", whiteSpace:'nowrap' }}>
+          {importando ? '✕ Cancelar' : '✨ Importar movimientos'}
+        </button>
+      </div>
+
+      {importando && (
+        <div style={{ marginTop:12, padding:'14px', border:`1px dashed ${C.border2}`, borderRadius:10, textAlign:'center' }}>
+          <div style={{ fontSize:'.72em', color:C.muted, lineHeight:1.6, marginBottom:10 }}>
+            Captura la pantalla de <strong style={{ color:C.text }}>movimientos o actividad</strong> de tu broker
+            y <strong style={{ color:C.text }}>pégala con Ctrl+V</strong>, o súbela desde aquí. Solo se leen las ventas.
+          </div>
+          <input ref={fileRef} type="file" accept="image/*" onChange={desdeFichero} style={{ display:'none' }} />
+          <button onClick={() => fileRef.current?.click()} disabled={cargando}
+            style={{ background:'transparent', border:`1px solid ${C.border2}`, color:C.muted, borderRadius:8, padding:'6px 14px', cursor:'pointer', fontSize:'.72em', fontFamily:"'Sora',sans-serif" }}>
+            {cargando ? 'Leyendo…' : 'Elegir imagen'}
+          </button>
+        </div>
+      )}
+
+      {error && <div style={{ marginTop:10, fontSize:'.72em', color:C.red }}>{error}</div>}
+
+      {delAno.length > 0 && (
+        <div style={{ marginTop:12, display:'flex', flexDirection:'column', gap:6 }}>
+          {delAno.map(o => (
+            <div key={o.id} style={{ display:'flex', alignItems:'center', gap:10, fontSize:'.74em' }}>
+              <span style={{ color:C.muted, fontFamily:"'DM Mono',monospace", fontSize:'.9em', minWidth:82 }}>{o.fecha}</span>
+              <span style={{ color:C.gold, fontFamily:"'DM Mono',monospace", fontWeight:600 }}>{o.ticker}</span>
+              <span style={{ color:C.muted, flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{o.name}</span>
+              <span style={{ color: o.resultado >= 0 ? C.green : C.red, fontFamily:"'DM Mono',monospace" }}>
+                {o.resultado >= 0 ? '+' : ''}{o.resultado.toLocaleString('es-ES')}€
+              </span>
+              <button onClick={() => void guardar(operaciones.filter(x => x.id !== o.id))}
+                title="Quitar" style={{ background:'transparent', border:'none', color:C.faint, cursor:'pointer', fontSize:'.9em', padding:'0 2px' }}>
+                ✕
+              </button>
+            </div>
+          ))}
+
+          {/* Lo único que hace accionable todo lo anterior. */}
+          <div style={{ marginTop:6, paddingTop:10, borderTop:`1px solid ${C.border}`, fontSize:'.68em', color:C.muted, lineHeight:1.55 }}>
+            {balance.margenParaCompensar > 0
+              ? <>Te quedan <strong style={{ color:C.text }}>{balance.margenParaCompensar.toLocaleString('es-ES')} €</strong> de
+                  ganancia sin compensar: vender algo en pérdidas hasta ese importe sí te ahorraría impuestos este año.</>
+              : <>No te queda ganancia sin compensar, así que una pérdida nueva <strong style={{ color:C.text }}>no
+                  te ahorraría nada este año</strong> — se guardaría para los cuatro siguientes.</>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface ContextoIndice {
   key: string; name: string;
   desdeMaximoPct: number; periodoPct: number;
@@ -1560,13 +1733,14 @@ interface ContextoIndice {
  * números van calculados de antemano para que la IA no invente ninguno: lo que
  * se le pide es el juicio, no la aritmética.
  */
-function RevisionCard({ portfolio, profile, userProfile, planes, efectivo, setEfectivo }: {
+function RevisionCard({ portfolio, profile, userProfile, planes, efectivo, setEfectivo, operaciones }: {
   portfolio: Position[];
   profile: string;
   userProfile: UserProfile;
   planes: PlanInversion[];
   efectivo: number;
   setEfectivo: (n: number) => void;
+  operaciones: Operacion[];
 }) {
   const [texto,    setTexto]    = useState<string|null>(null);
   const [cargando, setCargando] = useState(false);
@@ -1623,6 +1797,7 @@ function RevisionCard({ portfolio, profile, userProfile, planes, efectivo, setEf
       }
 
       const bloqueDePlanes = bloquePlanes(planes);
+      const bloqueDeVentas = bloqueOperaciones(operaciones, new Date().getFullYear());
       const escritos = (userProfile.notes || '').trim();
       const pregunta = escritos
         ? `Mis planes:\n${planes}\n\nMis números:\n${hechos}${bloqueMercado}`
@@ -1871,9 +2046,11 @@ function GoalsCard({ totalVal }: { totalVal: number }) {
 function PortfolioTab({ portfolio, setPortfolio, profile, userProfile }:{ portfolio:Position[]; setPortfolio:(p:Position[])=>void; profile:string; userProfile:UserProfile }) {
   const [planes, setPlanes] = useState<PlanInversion[]>([]);
   const [efectivo, setEfectivo] = useState(0);
+  const [operaciones, setOperaciones] = useState<Operacion[]>([]);
   useEffect(() => {
     void sGet<PlanInversion[]>(CLAVE_PLANES).then(p => { if (p) setPlanes(p); });
     void sGet<number>(CLAVE_EFECTIVO).then(e => { if (typeof e === 'number') setEfectivo(e); });
+    void sGet<Operacion[]>(CLAVE_OPERACIONES).then(o => { if (o) setOperaciones(o); });
   }, []);
   const empty = { ticker:'', name:'', shares:'', avgPrice:'', currentPrice:'' };
   const [form, setForm]       = useState(empty);
@@ -2121,8 +2298,9 @@ function PortfolioTab({ portfolio, setPortfolio, profile, userProfile }:{ portfo
       </div>
       {/* Score AURUM */}
       <PlanesCard planes={planes} setPlanes={setPlanes} />
+      <OperacionesCard operaciones={operaciones} setOperaciones={setOperaciones} />
       <RevisionCard portfolio={portfolio} profile={profile} userProfile={userProfile} planes={planes}
-        efectivo={efectivo} setEfectivo={setEfectivo} />
+        efectivo={efectivo} setEfectivo={setEfectivo} operaciones={operaciones} />
       <AurumScoreCard portfolio={portfolio} profile={profile} />
       {/* Goals tracker */}
       <GoalsCard totalVal={totalVal} />
