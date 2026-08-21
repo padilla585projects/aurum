@@ -12,6 +12,7 @@ Flujo de auth:
 import asyncio
 import base64
 import json
+import re
 import logging
 from typing import Any, Optional
 
@@ -556,20 +557,61 @@ def _lista_de_posiciones(datos: Any) -> Optional[list]:
     return None
 
 
+def _entre_comillas(texto: str) -> str:
+    """Lo que hay hasta la siguiente comilla, que es donde acaba el argumento."""
+    posiciones = [p for p in (texto.find("'"), texto.find('"')) if p != -1]
+    return texto[:min(posiciones)] if posiciones else texto
+
+
+def _sacar_de_curl(crudo: str) -> str:
+    """Extrae las galletas de un «Copiar como cURL» del navegador.
+
+    Buscar la cabecera `Cookie` a mano entre cuarenta es donde se atasca
+    cualquiera; copiar como cURL es un clic derecho. Se hace a mano y no con
+    una expresión regular porque aquí se lee mejor lo que ocurre.
+    """
+    bajo = crudo.lower()
+
+    # Forma habitual de Chrome y Firefox: -H 'cookie: a=1; b=2'
+    i = bajo.find("cookie:")
+    if i != -1:
+        return _entre_comillas(crudo[i + len("cookie:"):]).strip()
+
+    # Forma de curl a secas: -b 'a=1; b=2' o --cookie 'a=1; b=2'
+    for bandera in ("--cookie", "-b "):
+        i = bajo.find(bandera)
+        if i == -1:
+            continue
+        resto = crudo[i + len(bandera):].lstrip()
+        if resto[:1] in ("'", '"'):
+            resto = resto[1:]
+        return _entre_comillas(resto).strip()
+
+    return crudo
+
+
 def _parsear_galletas(crudo: str) -> dict:
     """Entiende lo que sea que el usuario haya conseguido copiar.
 
-    Vale la cabecera `Cookie` entera (`a=1; b=2`), una sola pareja, o el valor
-    suelto del token. Pedirle a alguien que acierte con el formato exacto es
-    pedirle que falle: lo que llega se interpreta.
+    Vale un «Copiar como cURL», la cabecera `Cookie` entera (`a=1; b=2`), una
+    sola pareja, o el valor suelto del token. Pedirle a alguien que acierte con
+    el formato exacto es pedirle que falle: lo que llega se interpreta.
     """
-    crudo = (crudo or "").strip().strip('"').strip("'")
+    crudo = (crudo or "").strip()
     if not crudo:
         return {}
+
+    if "curl" in crudo[:80].lower():
+        crudo = _sacar_de_curl(crudo)
+
+    crudo = crudo.strip().strip('"').strip("'").strip()
 
     # Por si pega la línea entera tal como la muestra el navegador.
     if crudo.lower().startswith("cookie:"):
         crudo = crudo.split(":", 1)[1].strip()
+
+    # Una cabecera copiada de la pantalla puede venir partida en varias líneas.
+    crudo = " ".join(crudo.split())
 
     if "=" not in crudo:
         # Solo el valor: se asume el nombre que usa TR.

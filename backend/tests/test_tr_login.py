@@ -182,3 +182,38 @@ class TestSesionCedida:
         tr = cliente_con(lambda p: respuesta({"ok": True}))
         tr._session_token = "abc"
         assert asyncio.run(tr.renovar_sesion()) is True
+
+
+class TestPegarComoSea:
+    """Lo que la gente consigue copiar, no lo que sería cómodo recibir.
+
+    Buscar una cabecera concreta entre cuarenta es donde se atasca cualquiera,
+    así que se acepta también el «Copiar como cURL» del navegador, que es un
+    clic derecho.
+    """
+
+    CURL = (
+        "curl 'https://api.traderepublic.com/api/v1/auth/web/session' \\n"
+        "  -H 'accept: application/json' \\n"
+        "  -H 'cookie: tr_session=abc123; tr_claims=def456; aws-waf-token=ghi789' \\n"
+        "  -H 'user-agent: Mozilla/5.0'"
+    )
+
+    def test_entiende_un_copiar_como_curl(self):
+        from tr_client import _parsear_galletas
+        assert _parsear_galletas(self.CURL) == {
+            "tr_session": "abc123", "tr_claims": "def456", "aws-waf-token": "ghi789",
+        }
+
+    def test_entiende_el_curl_con_la_opcion_corta(self):
+        from tr_client import _parsear_galletas
+        crudo = "curl 'https://api.traderepublic.com/x' -b 'tr_session=abc; tr_device=xyz' --compressed"
+        assert _parsear_galletas(crudo) == {"tr_session": "abc", "tr_device": "xyz"}
+
+    def test_una_cabecera_partida_en_varias_lineas_se_recompone(self):
+        from tr_client import _parsear_galletas
+        assert _parsear_galletas("tr_session=abc;\n  tr_claims=def") == {"tr_session": "abc", "tr_claims": "def"}
+
+    def test_sigue_valiendo_la_linea_cookie_a_secas(self):
+        from tr_client import _parsear_galletas
+        assert _parsear_galletas("Cookie: tr_session=abc; b=2") == {"tr_session": "abc", "b": "2"}

@@ -3004,12 +3004,14 @@ function BackendSection() {
                 <li>Entra en <code style={{ color:C.text }}>app.traderepublic.com</code> en este navegador, como cualquier día.</li>
                 <li>Pulsa <strong style={{ color:C.text }}>F12</strong> y ve a la pestaña <strong style={{ color:C.text }}>Red</strong> (o <em>Network</em>).</li>
                 <li>Recarga la página y busca cualquier petición a <code style={{ color:C.text }}>api.traderepublic.com</code>.</li>
-                <li>Ábrela, y en <strong style={{ color:C.text }}>Cabeceras de la petición</strong> busca la línea <code style={{ color:C.text }}>Cookie:</code>. Cópiala <strong style={{ color:C.text }}>entera</strong> y pégala aquí abajo.</li>
+                <li><strong style={{ color:C.text }}>Clic derecho</strong> sobre ella → <strong style={{ color:C.text }}>Copiar</strong> → <strong style={{ color:C.text }}>Copiar como cURL</strong>.</li>
+                <li>Pega eso aquí abajo, tal cual. AURUM saca de dentro lo que necesita.</li>
               </ol>
               <div style={{ fontSize:'.66em', color:C.muted, lineHeight:1.6, margin:'0 0 12px' }}>
-                Entera, no solo <code style={{ color:C.text }}>tr_session</code>: Trade Republic
-                comprueba varias a la vez, incluida la del control anti-robots. Copiar la línea
-                completa evita adivinar cuáles hacen falta.
+                Se pega el cURL entero a propósito: Trade Republic comprueba varias galletas a
+                la vez —incluida la del control anti-robots— y así no hay que adivinar cuáles.
+                También vale pegar solo la línea <code style={{ color:C.text }}>Cookie:</code> si
+                prefieres buscarla.
               </div>
               </>
             )}
@@ -3022,7 +3024,7 @@ function BackendSection() {
                     value={trSesion}
                     onChange={e => setTrSesion(e.target.value)}
                     type="password"
-                    placeholder="tr_session=…; tr_claims=…; aws-waf-token=…"
+                    placeholder="pega aquí el cURL, o la línea Cookie"
                     autoComplete="off"
                     style={{ ...fs, padding:'7px 10px' }}
                   />
