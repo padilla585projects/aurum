@@ -102,14 +102,36 @@ async def complete_login(user_email: str, otp: str = "") -> None:
     db.audit("broker_login_completed", user_email)
 
 
+async def adoptar_sesion(user_email: str, galletas: str) -> None:
+    """Toma una sesión que el usuario abrió en su navegador y la deja lista.
+
+    Se guarda cifrada además de usarse: si no, cada reinicio del backend
+    obligaría a repetir el paso manual, que es justo lo incómodo de esta vía.
+    """
+    session = await _session_for(user_email)
+    async with session.lock:
+        await session.client.usar_sesion(galletas)
+        await session.client.connect()
+    db.set_broker_session(user_email, galletas)
+
+
 async def require_authenticated(user_email: str) -> BrokerSession:
     """
     Devuelve la sesión lista para usar, o falla si el usuario no ha completado
     el acceso al broker.
     """
     session = await _session_for(user_email)
+
     if not session.authenticated:
-        raise TRAuthError("No has iniciado sesión en Trade Republic con esta cuenta.")
+        # Puede que la sesión siga guardada de antes: reiniciar el backend no
+        # tiene por qué costarle al usuario otra vuelta por el navegador.
+        guardada = db.get_broker_session(user_email)
+        if not guardada:
+            raise TRAuthError("No has iniciado sesión en Trade Republic con esta cuenta.")
+        async with session.lock:
+            await session.client.usar_sesion(guardada)
+            await session.client.connect()
+
     async with session.lock:
         await session.client.ensure_connected()
     return session

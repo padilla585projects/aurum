@@ -239,6 +239,63 @@ class TRClient:
         logger.info("Trade Republic autenticado")
         return self._session_token
 
+    async def usar_sesion(self, galletas: str) -> dict:
+        """Adopta una sesión que el usuario abrió en su propio navegador.
+
+        Es la única vía que queda. TR puso su anti-bot delante de todos los
+        puntos de acceso, así que entrar por programa exigiría resolver un
+        desafío hecho justamente para distinguir personas de programas. Aquí no
+        se resuelve nada: la persona entra como cualquier día y cede su sesión.
+
+        El anti-bot protege *entrar*, no *usar* una sesión ya abierta — por eso
+        esto funciona sin sortear nada.
+        """
+        trozos = _parsear_galletas(galletas)
+        if not trozos:
+            raise TRAuthError(
+                "No reconozco ninguna galleta en lo que has pegado. Copia el valor de "
+                "`tr_session`, o la línea entera de cabecera `Cookie`."
+            )
+
+        cliente = self._http()
+        for nombre, valor in trozos.items():
+            cliente.cookies.set(nombre, valor, domain=".traderepublic.com", path="/")
+
+        r = await cliente.get("/api/v1/auth/web/session")
+        if r.status_code == 401:
+            raise TRAuthError(
+                "Trade Republic no acepta esa sesión: o ha caducado, o no es la buena. "
+                "Vuelve a entrar en su web y cópiala otra vez."
+            )
+        if r.status_code >= 400:
+            raise TRAuthError(f"Trade Republic ha rechazado la sesión: {self._detalle(r)}")
+
+        # El WebSocket se autentica con la misma sesión, dentro del saludo.
+        self._session_token = trozos.get("tr_session") or next(iter(trozos.values()))
+        self.authenticated = True
+        logger.info("Sesión de Trade Republic adoptada")
+
+        try:
+            return r.json()
+        except Exception:
+            return {}
+
+    async def renovar_sesion(self) -> bool:
+        """Toca la sesión para que no caduque. Devuelve si sigue viva."""
+        if not self._session_token:
+            return False
+        try:
+            r = await self._http().get("/api/v1/auth/web/session")
+        except Exception as e:
+            logger.warning(f"No se ha podido renovar la sesión de TR: {e}")
+            return False
+
+        viva = r.status_code < 400
+        if not viva:
+            self.authenticated = False
+            logger.warning("La sesión de Trade Republic ha caducado.")
+        return viva
+
     async def _esperar_aprobacion(self, espera_total: float = 120.0) -> None:
         """Sondea hasta que apruebas el acceso desde la app de Trade Republic."""
         limite = asyncio.get_event_loop().time() + espera_total
@@ -497,3 +554,34 @@ def _lista_de_posiciones(datos: Any) -> Optional[list]:
                 if dentro:
                     return dentro
     return None
+
+
+def _parsear_galletas(crudo: str) -> dict:
+    """Entiende lo que sea que el usuario haya conseguido copiar.
+
+    Vale la cabecera `Cookie` entera (`a=1; b=2`), una sola pareja, o el valor
+    suelto del token. Pedirle a alguien que acierte con el formato exacto es
+    pedirle que falle: lo que llega se interpreta.
+    """
+    crudo = (crudo or "").strip().strip('"').strip("'")
+    if not crudo:
+        return {}
+
+    # Por si pega la línea entera tal como la muestra el navegador.
+    if crudo.lower().startswith("cookie:"):
+        crudo = crudo.split(":", 1)[1].strip()
+
+    if "=" not in crudo:
+        # Solo el valor: se asume el nombre que usa TR.
+        return {"tr_session": crudo}
+
+    trozos = {}
+    for parte in crudo.split(";"):
+        parte = parte.strip()
+        if "=" not in parte:
+            continue
+        nombre, _, valor = parte.partition("=")
+        nombre, valor = nombre.strip(), valor.strip()
+        if nombre and valor:
+            trozos[nombre] = valor
+    return trozos

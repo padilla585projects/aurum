@@ -2861,10 +2861,9 @@ function BackendSection() {
   const [apiKey,     setApiKey]     = useState('');
   const [status,     setStatus]     = useState<'idle'|'ok'|'error'>('idle');
   const [statusMsg,  setStatusMsg]  = useState('');
-  const [trPhone,    setTrPhone]    = useState('');
-  const [trPin,      setTrPin]      = useState('');
-  const [trOtp,      setTrOtp]      = useState('');
-  const [authPhase,  setAuthPhase]  = useState<'idle'|'otp'|'aprobar'|'done'>('idle');
+  const [trSesion,   setTrSesion]   = useState('');
+  const [authPhase,  setAuthPhase]  = useState<'idle'|'done'>('idle');
+  const [comoVa,     setComoVa]     = useState(false);
   const [authMsg,    setAuthMsg]    = useState('');
   const fs: React.CSSProperties    = { ...inputBase, padding:'8px 12px' };
 
@@ -2927,38 +2926,18 @@ function BackendSection() {
     }
   };
 
-  const sendOtp = async () => {
-    // Trade Republic retiró el SMS: ahora decide él si pide un código de
-    // autenticador o si hay que aprobar desde su aplicación del móvil. Se
-    // hace lo que diga, en vez de dar por supuesto el camino de antes.
-    setAuthMsg('Conectando con Trade Republic…');
+  // Trade Republic puso su anti-bot delante de todos sus accesos, así que
+  // AURUM ya no puede entrar por sí solo con teléfono y PIN. Lo que sí puede
+  // es usar una sesión que hayas abierto tú: el anti-bot vigila *entrar*, no
+  // *usar* una sesión ya abierta. Por eso ya no hay formulario de credenciales
+  // — dejarlo puesto sería prometer algo que no funciona.
+  const enlazarSesion = async () => {
+    setAuthMsg('Comprobando la sesión con Trade Republic…');
     try {
-      const r = await backendCall({ url, apiKey }, '/auth/init', 'POST', { phone: trPhone, pin: trPin });
-
-      if (r.needsCode) {
-        setAuthPhase('otp');
-        setAuthMsg('Introduce el código de tu aplicación de autenticación.');
-        return;
-      }
-
-      setAuthPhase('aprobar');
-      setAuthMsg('Abre Trade Republic en tu móvil y aprueba el acceso. Esperando…');
-      // Esta llamada se queda abierta mientras el backend sondea a TR.
-      await backendCall({ url, apiKey }, '/auth/verify', 'POST', { otp: '' });
+      await backendCall({ url, apiKey }, '/auth/session', 'POST', { cookies: trSesion });
       setAuthPhase('done');
       setAuthMsg('Trade Republic enlazado. AURUM ya puede leer tu cartera.');
-    } catch (e: any) {
-      setAuthPhase('idle');
-      setAuthMsg(`Error: ${String(e?.message ?? e)}`);
-    }
-  };
-
-  const verifyOtp = async () => {
-    setAuthMsg('Verificando…');
-    try {
-      await backendCall({ url, apiKey }, '/auth/verify', 'POST', { otp: trOtp });
-      setAuthPhase('done');
-      setAuthMsg('Trade Republic enlazado. AURUM ya puede leer tu cartera.');
+      setTrSesion('');
     } catch (e: any) {
       setAuthMsg(`Error: ${String(e?.message ?? e)}`);
     }
@@ -3004,39 +2983,57 @@ function BackendSection() {
         {/* TR Auth */}
         {status === 'ok' && authPhase !== 'done' && (
           <div style={{ borderTop:`1px solid ${C.border}`, paddingTop:14 }}>
-            <div style={{ fontSize:'.68em', color:C.muted, marginBottom:10, letterSpacing:'1px', textTransform:'uppercase' }}>Autenticar Trade Republic</div>
-            {authPhase === 'idle' && (
-              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr auto', gap:8, alignItems:'end' }}>
+            <div style={{ fontSize:'.68em', color:C.muted, marginBottom:10, letterSpacing:'1px', textTransform:'uppercase' }}>Enlazar Trade Republic</div>
+
+            <div style={{ fontSize:'.7em', color:C.muted, lineHeight:1.6, marginBottom:12 }}>
+              Trade Republic bloquea que un programa entre con tu teléfono y tu PIN: exige
+              resolver un control anti-robots pensado para distinguir personas de programas.
+              AURUM no lo hace por ti — <strong style={{ color:C.text }}>entras tú, y le cedes
+              tu propia sesión</strong>.
+              <button
+                onClick={() => setComoVa(v => !v)}
+                style={{ background:'none', border:'none', color:C.blue, cursor:'pointer', padding:0, marginLeft:6, fontSize:'1em', fontFamily:'inherit', textDecoration:'underline' }}
+              >
+                {comoVa ? 'ocultar los pasos' : '¿cómo se saca?'}
+              </button>
+            </div>
+
+            {comoVa && (
+              <ol style={{ fontSize:'.68em', color:C.muted, lineHeight:1.8, margin:'0 0 12px', paddingLeft:20 }}>
+                <li>Entra en <code style={{ color:C.text }}>app.traderepublic.com</code> en este navegador, como cualquier día.</li>
+                <li>Pulsa <strong style={{ color:C.text }}>F12</strong> para abrir las herramientas de desarrollo.</li>
+                <li>Ve a <strong style={{ color:C.text }}>Aplicación</strong> (o <em>Application</em>) → <strong style={{ color:C.text }}>Cookies</strong> → <code style={{ color:C.text }}>traderepublic.com</code>.</li>
+                <li>Copia el valor de <code style={{ color:C.text }}>tr_session</code> y pégalo aquí abajo.</li>
+              </ol>
+            )}
+
+            {/* El bloque de fuera ya solo se pinta cuando falta enlazar. */}
+            <div style={{ display:'grid', gridTemplateColumns:'1fr auto', gap:8, alignItems:'end' }}>
                 <div>
-                  <div style={{ fontSize:'.6em', color:C.muted, marginBottom:4 }}>Teléfono TR</div>
-                  <input value={trPhone} onChange={e=>setTrPhone(e.target.value)} placeholder="+34612345678" style={{ ...fs, padding:'7px 10px' }} />
+                  <div style={{ fontSize:'.6em', color:C.muted, marginBottom:4 }}>Sesión de Trade Republic</div>
+                  <input
+                    value={trSesion}
+                    onChange={e => setTrSesion(e.target.value)}
+                    type="password"
+                    placeholder="tr_session=…"
+                    autoComplete="off"
+                    style={{ ...fs, padding:'7px 10px' }}
+                  />
                 </div>
-                <div>
-                  <div style={{ fontSize:'.6em', color:C.muted, marginBottom:4 }}>PIN TR</div>
-                  <input value={trPin} onChange={e=>setTrPin(e.target.value)} type="password" placeholder="••••" style={{ ...fs, padding:'7px 10px' }} />
-                </div>
-                <button onClick={sendOtp} style={{ background:C.gold, border:'none', borderRadius:8, padding:'7px 14px', color:'#07070e', fontWeight:600, cursor:'pointer', fontSize:'.78em', fontFamily:"'Sora',sans-serif", whiteSpace:'nowrap' }}>
-                  Continuar →
+                <button
+                  onClick={enlazarSesion}
+                  disabled={!trSesion.trim()}
+                  style={{ background: trSesion.trim() ? C.gold : `${C.gold}44`, border:'none', borderRadius:8, padding:'7px 16px', color:'#07070e', fontWeight:600, cursor: trSesion.trim() ? 'pointer' : 'default', fontSize:'.78em', fontFamily:"'Sora',sans-serif", whiteSpace:'nowrap' }}
+                >
+                  Enlazar →
                 </button>
-              </div>
-            )}
-            {authPhase === 'aprobar' && (
-              <div style={{ fontSize:'.72em', color:C.text, padding:'10px 12px', background:`${C.gold}0c`, borderRadius:8, border:`1px solid ${C.gold}33`, lineHeight:1.6 }}>
-                Abre <strong>Trade Republic</strong> en tu móvil: te saldrá un aviso para
-                aprobar este acceso. En cuanto lo apruebes, esto continúa solo.
-              </div>
-            )}
-            {authPhase === 'otp' && (
-              <div style={{ display:'grid', gridTemplateColumns:'1fr auto', gap:8, alignItems:'end' }}>
-                <div>
-                  <div style={{ fontSize:'.6em', color:C.muted, marginBottom:4 }}>Código de tu aplicación de autenticación</div>
-                  <input value={trOtp} onChange={e=>setTrOtp(e.target.value)} placeholder="1234" maxLength={6} style={{ ...fs, padding:'7px 10px', letterSpacing:'4px', fontFamily:"'DM Mono',monospace" }} />
-                </div>
-                <button onClick={verifyOtp} style={{ background:C.green, border:'none', borderRadius:8, padding:'7px 16px', color:'#07070e', fontWeight:600, cursor:'pointer', fontSize:'.78em', fontFamily:"'Sora',sans-serif" }}>
-                  Verificar ✓
-                </button>
-              </div>
-            )}
+            </div>
+
+            <div style={{ fontSize:'.66em', color:C.muted, marginTop:10, lineHeight:1.5 }}>
+              Se guarda cifrada en tu backend, igual que el resto. Cuando caduque, AURUM te
+              lo dirá y bastará con repetir estos pasos.
+            </div>
+
             {authMsg && <div style={{ fontSize:'.7em', color:C.muted, marginTop:8 }}>{authMsg}</div>}
           </div>
         )}

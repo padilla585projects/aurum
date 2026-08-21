@@ -120,9 +120,22 @@ Con el backend ya conectado, en la misma pantalla de Ajustes introduce el **tel�
 >
 > **AURUM no lo hace por ti, y es deliberado**: automatizar eso es sortear una detección de bots, y no es algo que este proyecto vaya a incluir. Otros clientes lo resuelven lanzando un navegador con Playwright; aquí no.
 >
-> Lo que sí funciona sin tocar esto: llevar tu cartera a mano. No pierdes nada del asesoramiento.
->
 > Si el error que ves dice «exige un token anti-bot de AWS», es esto y no un fallo de tu instalación.
+
+### La vía que sí funciona: cederle tu sesión
+
+El control anti-robots vigila **entrar**, no **usar una sesión ya abierta**. Así que entras tú, como cualquier día, y le pasas esa sesión a tu backend:
+
+1. Abre `app.traderepublic.com` en tu navegador y entra normalmente.
+2. Pulsa **F12** → pestaña **Aplicación** (o *Application*) → **Cookies** → `traderepublic.com`.
+3. Copia el valor de `tr_session`.
+4. Pégalo en AURUM: **Ajustes → Enlazar Trade Republic**.
+
+Se guarda cifrada en tu backend y sobrevive a reinicios. Cuando caduque, AURUM te lo dirá y basta con repetir los cuatro pasos.
+
+La diferencia con lo que hacen otros clientes no es técnica, es de fondo: ellos automatizan un navegador para engañar al control; aquí lo pasa una persona y luego cede su propia sesión a su propio servidor.
+
+También funciona sin nada de esto: llevar la cartera a mano no te quita ningún consejo.
 
 Ese paso no se puede automatizar y es deliberado: es lo que impide que nadie entre en tu cuenta solo con haberte robado un fichero.
 

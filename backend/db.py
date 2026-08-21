@@ -66,6 +66,14 @@ CREATE TABLE IF NOT EXISTS broker_credentials (
     updated_at  REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS broker_session (
+    user_email  TEXT PRIMARY KEY,
+    broker      TEXT NOT NULL DEFAULT 'trade_republic',
+    session_enc TEXT NOT NULL,
+    created_at  REAL NOT NULL,
+    updated_at  REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS order_log (
     id               TEXT PRIMARY KEY,
     idempotency_key  TEXT NOT NULL,
@@ -279,6 +287,48 @@ def delete_broker_credentials(user_email: str) -> None:
     email = user_email.strip().lower()
     _execute("DELETE FROM broker_credentials WHERE user_email = ?", (email,))
     audit("broker_credentials_deleted", email)
+
+
+# ── Sesión cedida desde el navegador ─────────────────────────────────────────
+#
+# TR puso su anti-bot delante de todos los puntos de acceso, así que un programa
+# ya no puede entrar por sí solo. Lo que sí puede es usar una sesión que abrió
+# una persona. Se guarda cifrada igual que las credenciales, y con la misma
+# regla: atada al correo de su dueño, así que moverla de fila no sirve de nada.
+
+
+def set_broker_session(user_email: str, cookies: str, broker: str = "trade_republic") -> None:
+    email = user_email.strip().lower()
+    now = time.time()
+    _execute(
+        """INSERT INTO broker_session (user_email, broker, session_enc, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(user_email) DO UPDATE SET
+             broker = excluded.broker,
+             session_enc = excluded.session_enc,
+             updated_at = excluded.updated_at""",
+        (email, broker, encrypt(cookies, email), now, now),
+    )
+    # Nunca el contenido: en la auditoría solo consta que se guardó una.
+    audit("broker_session_set", email, {"broker": broker})
+
+
+def get_broker_session(user_email: str) -> Optional[str]:
+    email = user_email.strip().lower()
+    rows = _query("SELECT session_enc FROM broker_session WHERE user_email = ?", (email,))
+    if not rows:
+        return None
+    return decrypt(rows[0]["session_enc"], email)
+
+
+def has_broker_session(user_email: str) -> bool:
+    return bool(_query("SELECT 1 FROM broker_session WHERE user_email = ?", (user_email.strip().lower(),)))
+
+
+def delete_broker_session(user_email: str) -> None:
+    email = user_email.strip().lower()
+    _execute("DELETE FROM broker_session WHERE user_email = ?", (email,))
+    audit("broker_session_deleted", email)
 
 
 # ── Órdenes ──────────────────────────────────────────────────────────────────

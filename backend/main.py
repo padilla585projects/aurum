@@ -565,6 +565,12 @@ class AuthInitRequest(BaseModel):
     phone: str
     pin:   str
 
+class BrokerSessionRequest(BaseModel):
+    # La cabecera Cookie entera, una pareja suelta o el valor del token: lo que
+    # el usuario consiga copiar. Se interpreta en el cliente.
+    cookies: str = Field(min_length=8, max_length=8000)
+
+
 class AuthVerifyRequest(BaseModel):
     # Vacio cuando el segundo factor se aprueba desde la app de TR.
     otp: str = ""
@@ -767,6 +773,33 @@ async def auth_verify(body: AuthVerifyRequest, x_aurum_key: str = Header(default
         return {"status": "authenticated"}
     except TRAuthError as e:
         raise HTTPException(400, str(e))
+
+
+@app.post("/auth/session")
+async def auth_session(body: BrokerSessionRequest, x_aurum_key: str = Header(default="")):
+    """Adopta una sesión abierta por el usuario en su navegador.
+
+    Trade Republic puso su anti-bot delante de todos los puntos de acceso, así
+    que AURUM ya no puede entrar por sí solo — y resolver ese desafío por
+    programa es justo lo que este proyecto no hace. Esta es la vía honesta:
+    entra la persona, y cede su propia sesión a su propio servidor.
+    """
+    principal = require_key(x_aurum_key)
+    require_scope(principal, SCOPE_READ)
+    try:
+        await broker_sessions.adoptar_sesion(principal.user_email, body.cookies)
+        return {"status": "authenticated"}
+    except TRAuthError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.delete("/auth/session")
+async def auth_session_delete(x_aurum_key: str = Header(default="")):
+    principal = require_key(x_aurum_key)
+    require_scope(principal, SCOPE_READ)
+    await broker_sessions.disconnect(principal.user_email)
+    db.delete_broker_session(principal.user_email)
+    return {"status": "deleted"}
 
 
 @app.get("/portfolio")

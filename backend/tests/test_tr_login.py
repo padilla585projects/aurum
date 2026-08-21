@@ -117,3 +117,68 @@ class TestSegundoFactor:
         tr = cliente_con(lambda p: respuesta({}))
         with pytest.raises(TRAuthError, match="login_init"):
             asyncio.run(tr.login_verify("123456"))
+
+
+class TestSesionCedida:
+    """La sesión que el usuario copia de su navegador.
+
+    Es la única vía que queda desde que TR puso su anti-bot delante de todos
+    los puntos de acceso. Lo que se fija aquí es que acepte lo que la gente
+    consiga copiar —el formato exacto no se le puede exigir a nadie— y que una
+    sesión caducada se diga en vez de dejar la cartera en blanco.
+    """
+
+    def test_entiende_la_cabecera_cookie_entera(self):
+        from tr_client import _parsear_galletas
+        assert _parsear_galletas("tr_session=abc123; otra=xyz") == {"tr_session": "abc123", "otra": "xyz"}
+
+    def test_entiende_la_linea_tal_como_la_copia_el_navegador(self):
+        from tr_client import _parsear_galletas
+        assert _parsear_galletas("Cookie: tr_session=abc123")["tr_session"] == "abc123"
+
+    def test_entiende_el_valor_suelto(self):
+        from tr_client import _parsear_galletas
+        assert _parsear_galletas("abc123") == {"tr_session": "abc123"}
+
+    def test_aguanta_comillas_y_espacios_de_mas(self):
+        from tr_client import _parsear_galletas
+        assert _parsear_galletas('  " tr_session = abc123 ; b=2 "  ') == {"tr_session": "abc123", "b": "2"}
+
+    def test_una_sesion_valida_deja_el_cliente_listo(self):
+        visto = {}
+
+        def manejador(peticion: httpx.Request) -> httpx.Response:
+            visto["url"] = str(peticion.url)
+            visto["cookie"] = peticion.headers.get("cookie", "")
+            return respuesta({"userId": "u-1"})
+
+        tr = cliente_con(manejador)
+        asyncio.run(tr.usar_sesion("tr_session=abc123"))
+
+        assert tr.authenticated is True
+        assert tr._session_token == "abc123"
+        assert visto["url"].endswith("/api/v1/auth/web/session")
+        assert "tr_session=abc123" in visto["cookie"]
+
+    def test_una_sesion_caducada_se_dice_con_todas_las_letras(self):
+        tr = cliente_con(lambda p: respuesta({"errors": [{"errorCode": "AUTHENTICATION_ERROR"}]}, 401))
+        with pytest.raises(TRAuthError, match="caducado"):
+            asyncio.run(tr.usar_sesion("tr_session=vieja"))
+        assert tr.authenticated is False
+
+    def test_pegar_cualquier_cosa_no_pasa_por_valido(self):
+        tr = cliente_con(lambda p: respuesta({}))
+        with pytest.raises(TRAuthError, match="reconozco"):
+            asyncio.run(tr.usar_sesion("   "))
+
+    def test_renovar_avisa_cuando_la_sesion_ha_muerto(self):
+        tr = cliente_con(lambda p: respuesta({"errors": [{"errorCode": "AUTHENTICATION_ERROR"}]}, 401))
+        tr._session_token = "abc"
+        tr.authenticated = True
+        assert asyncio.run(tr.renovar_sesion()) is False
+        assert tr.authenticated is False
+
+    def test_renovar_confirma_cuando_sigue_viva(self):
+        tr = cliente_con(lambda p: respuesta({"ok": True}))
+        tr._session_token = "abc"
+        assert asyncio.run(tr.renovar_sesion()) is True

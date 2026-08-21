@@ -68,6 +68,7 @@ def register(
             "role": principal.role,
             "scopes": sorted(principal.scopes),
             "broker_linked": db.has_broker_credentials(principal.user_email),
+            "broker_session_saved": db.has_broker_session(principal.user_email),
             "broker_authenticated": await broker_sessions.is_authenticated(principal.user_email),
             "trading_enabled": trading_enabled,
             "max_daily_eur": max_daily_eur,
