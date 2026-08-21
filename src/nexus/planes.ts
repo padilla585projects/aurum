@@ -44,23 +44,69 @@ export function bloquePlanes(planes: PlanInversion[]): string {
     + 'Estos compran solos: al recomendar, cuenta con que ya entra ese dinero.';
 }
 
+/**
+ * Convierte a número lo que venga: «50», «50,00 €», «1.250,50», «50.00».
+ *
+ * Hace falta porque los importes de un broker español llevan coma decimal y
+ * símbolo de euro, y `Number('50,00 €')` es NaN. Sin esto los planes se caían
+ * en silencio y la pantalla decía que no había encontrado ninguno, que manda a
+ * buscar el fallo en la captura en lugar de aquí.
+ */
+export function aNumero(valor: unknown): number {
+  if (typeof valor === 'number') return Number.isFinite(valor) ? valor : NaN;
+  if (typeof valor !== 'string') return NaN;
+
+  let texto = valor.replace(/[^\d.,-]/g, '').trim();
+  if (!texto) return NaN;
+
+  const ultimaComa = texto.lastIndexOf(',');
+  const ultimoPunto = texto.lastIndexOf('.');
+
+  if (ultimaComa !== -1 && ultimoPunto !== -1) {
+    // Los dos: el último es el decimal y el otro separa los miles.
+    texto = ultimaComa > ultimoPunto
+      ? texto.replace(/\./g, '').replace(',', '.')
+      : texto.replace(/,/g, '');
+  } else if (ultimaComa !== -1) {
+    // Solo comas: decimal si separa 1 o 2 cifras, miles si son 3.
+    texto = texto.length - ultimaComa - 1 === 3
+      ? texto.replace(/,/g, '')
+      : texto.replace(',', '.');
+  }
+
+  const n = Number(texto);
+  return Number.isFinite(n) ? n : NaN;
+}
+
 /** Normaliza lo que devuelva la IA o escriba el usuario. */
 export function normalizarPlan(crudo: Record<string, unknown>, indice = 0): PlanInversion | null {
-  const ticker = String(crudo.ticker ?? '').trim().toUpperCase();
-  const amount = Number(crudo.amount ?? crudo.importe ?? 0);
+  const nombre = String(crudo.name ?? crudo.nombre ?? '').trim();
+  const amount = aNumero(crudo.amount ?? crudo.importe ?? crudo.cantidad ?? 0);
+
+  // La pantalla de planes de un broker suele enseñar el nombre del fondo y no
+  // su ticker. Exigirlo tiraba planes perfectamente legibles, y el usuario solo
+  // veía «no he encontrado ninguno». Si falta, se apaña con el nombre.
+  let ticker = String(crudo.ticker ?? crudo.symbol ?? '').trim().toUpperCase();
+  if (!ticker && nombre) {
+    ticker = nombre.split(/\s+/)[0].slice(0, 12).toUpperCase();
+  }
+
   if (!ticker || !Number.isFinite(amount) || amount <= 0) return null;
 
-  const cruda = String(crudo.frecuencia ?? crudo.frequency ?? 'mensual').toLowerCase();
+  // Se busca dentro del texto y no solo al principio: la IA devuelve tanto
+  // «quincenal» como «cada dos semanas», y con `startsWith` lo segundo se
+  // colaba como mensual. El orden importa — «dos semanas» contiene «semana».
+  const cruda = String(crudo.frecuencia ?? crudo.frequency ?? '').toLowerCase();
   const frecuencia: Frecuencia =
-    cruda.startsWith('sem') ? 'semanal'
-    : cruda.startsWith('quin') ? 'quincenal'
-    : cruda.startsWith('trim') ? 'trimestral'
+    /quincen|dos semanas|bisemanal|cada 2 semanas/.test(cruda) ? 'quincenal'
+    : /trimestr|cada 3 meses|cada tres meses/.test(cruda) ? 'trimestral'
+    : /semanal|cada semana/.test(cruda) ? 'semanal'
     : 'mensual';
 
   return {
     id: Date.now() + indice,
     ticker,
-    name: String(crudo.name ?? crudo.nombre ?? ticker).trim() || ticker,
+    name: nombre || ticker,
     amount: Math.round(amount * 100) / 100,
     frecuencia,
   };

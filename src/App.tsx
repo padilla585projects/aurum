@@ -1331,7 +1331,11 @@ function PlanesCard({ planes, setPlanes }: {
     setCargando(true); setError(null);
     try {
       const leidos = await parsePlanesWithAI(undefined, b64, tipo);
-      if (!leidos.length) { setError('No he encontrado planes periódicos en esa imagen.'); return; }
+      if (!leidos.length) {
+        setError('No he encontrado planes periódicos ahí. Asegúrate de que la captura sea '
+          + 'la pantalla de planes de inversión del broker, no la de posiciones.');
+        return;
+      }
       await guardar([...planes, ...leidos]);
       setImportando(false);
     } catch (e: any) {
