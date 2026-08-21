@@ -36,7 +36,7 @@ import * as store from './store/state';
 import * as compartido from './store/captura-compartida';
 import * as atras from './store/atras';
 import { calcularAvisos } from './nexus/avisos';
-import { CLAVE_PLANES, aportacionMensual, bloquePlanes, normalizarPlan, type PlanInversion } from './nexus/planes';
+import { CLAVE_EFECTIVO, CLAVE_PLANES, aportacionMensual, bloquePlanes, normalizarPlan, type PlanInversion } from './nexus/planes';
 import { REVISION_SYSTEM } from './nexus/prompts';
 import { C, PIE_PAL } from './theme';
 import { useSession } from './store/session-context';
@@ -548,6 +548,7 @@ function ChatTab({ profile, portfolio, userProfile }:{ profile:string; portfolio
         // Los planes periodicos tambien: preguntes lo que preguntes, que compres
         // 300 al mes cambia la respuesta.
         await sGet<PlanInversion[]>(CLAVE_PLANES) ?? [],
+        await sGet<number>(CLAVE_EFECTIVO) ?? 0,
       );
       const assistantMsg: DisplayMessage = { role:'assistant', content:reply, provider:routeResult?.provider, model:routeResult?.model, agent:agentKey };
       const finalHist = [...withUser, assistantMsg];
@@ -1530,11 +1531,13 @@ interface ContextoIndice {
  * números van calculados de antemano para que la IA no invente ninguno: lo que
  * se le pide es el juicio, no la aritmética.
  */
-function RevisionCard({ portfolio, profile, userProfile, planes }: {
+function RevisionCard({ portfolio, profile, userProfile, planes, efectivo, setEfectivo }: {
   portfolio: Position[];
   profile: string;
   userProfile: UserProfile;
   planes: PlanInversion[];
+  efectivo: number;
+  setEfectivo: (n: number) => void;
 }) {
   const [texto,    setTexto]    = useState<string|null>(null);
   const [cargando, setCargando] = useState(false);
@@ -1542,8 +1545,8 @@ function RevisionCard({ portfolio, profile, userProfile, planes }: {
   const [mercado,  setMercado]  = useState<ContextoIndice[]|null>(null);
 
   const avisos = useMemo(
-    () => calcularAvisos(portfolio, profile, userProfile.notes || ''),
-    [portfolio, profile, userProfile.notes],
+    () => calcularAvisos(portfolio, profile, userProfile.notes || '', efectivo),
+    [portfolio, profile, userProfile.notes, efectivo],
   );
 
   if (!portfolio.length) return null;
@@ -1561,6 +1564,8 @@ function RevisionCard({ portfolio, profile, userProfile, planes }: {
         `Valor actual: ${Math.round(valor).toLocaleString('es-ES')} EUR`,
         `Invertido: ${Math.round(coste).toLocaleString('es-ES')} EUR`,
         `Resultado: ${coste ? (((valor - coste) / coste) * 100).toFixed(1) : '0'}%`,
+        `Efectivo sin invertir: ${Math.round(efectivo).toLocaleString('es-ES')} EUR`,
+        `Total disponible: ${Math.round(valor + efectivo).toLocaleString('es-ES')} EUR`,
         '',
         formatDrift(drift),
         '',
@@ -1627,6 +1632,29 @@ function RevisionCard({ portfolio, profile, userProfile, planes }: {
           style={{ background: cargando ? `${C.gold}44` : C.gold, border:'none', borderRadius:9, padding:'8px 16px', color:'#07070e', fontWeight:600, cursor: cargando ? 'default' : 'pointer', fontSize:'.76em', fontFamily:"'Sora',sans-serif", whiteSpace:'nowrap' }}>
           {cargando ? 'Revisando…' : 'Revisar ahora'}
         </button>
+      </div>
+
+      {/* Sin esto no se puede saber de cuánto dispone en total, que es lo
+          primero que hace falta para un objetivo con fecha. */}
+      <div style={{ marginTop:12, paddingTop:12, borderTop:`1px solid ${C.border}`, display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
+        <span style={{ fontSize:'.72em', color:C.muted }}>Dinero sin invertir (cuenta o depósito)</span>
+        <input
+          type="number"
+          value={efectivo || ''}
+          onChange={e => {
+            const n = Number(e.target.value) || 0;
+            setEfectivo(n);
+            void sSet(CLAVE_EFECTIVO, n);
+          }}
+          placeholder="0"
+          style={{ ...inputBase, padding:'6px 10px', width:120, textAlign:'right' }}
+        />
+        <span style={{ fontSize:'.72em', color:C.muted }}>€</span>
+        {efectivo > 0 && (
+          <span style={{ fontSize:'.7em', color:C.faint }}>
+            Total disponible: {Math.round(efectivo + portfolio.reduce((a,p)=>a+p.shares*p.currentPrice,0)).toLocaleString('es-ES')} €
+          </span>
+        )}
       </div>
 
       {avisos.length > 0 && (
@@ -1813,7 +1841,11 @@ function GoalsCard({ totalVal }: { totalVal: number }) {
 
 function PortfolioTab({ portfolio, setPortfolio, profile, userProfile }:{ portfolio:Position[]; setPortfolio:(p:Position[])=>void; profile:string; userProfile:UserProfile }) {
   const [planes, setPlanes] = useState<PlanInversion[]>([]);
-  useEffect(() => { void sGet<PlanInversion[]>(CLAVE_PLANES).then(p => { if (p) setPlanes(p); }); }, []);
+  const [efectivo, setEfectivo] = useState(0);
+  useEffect(() => {
+    void sGet<PlanInversion[]>(CLAVE_PLANES).then(p => { if (p) setPlanes(p); });
+    void sGet<number>(CLAVE_EFECTIVO).then(e => { if (typeof e === 'number') setEfectivo(e); });
+  }, []);
   const empty = { ticker:'', name:'', shares:'', avgPrice:'', currentPrice:'' };
   const [form, setForm]       = useState(empty);
   const [adding, setAdding]   = useState(false);
@@ -2060,7 +2092,8 @@ function PortfolioTab({ portfolio, setPortfolio, profile, userProfile }:{ portfo
       </div>
       {/* Score AURUM */}
       <PlanesCard planes={planes} setPlanes={setPlanes} />
-      <RevisionCard portfolio={portfolio} profile={profile} userProfile={userProfile} planes={planes} />
+      <RevisionCard portfolio={portfolio} profile={profile} userProfile={userProfile} planes={planes}
+        efectivo={efectivo} setEfectivo={setEfectivo} />
       <AurumScoreCard portfolio={portfolio} profile={profile} />
       {/* Goals tracker */}
       <GoalsCard totalVal={totalVal} />

@@ -7,6 +7,8 @@ export interface ContextSelection {
   portfolio:    Position[] | null;
   /** Lo que compra periodicamente. La cartera dice lo que tiene; esto, hacia donde va. */
   planes:       PlanInversion[];
+  /** Dinero sin invertir. Sin esto no se puede saber de cuanto dispone en total. */
+  efectivo:     number;
   user:         UserProfile | null;
   facts:        string[];
   intent:       QueryIntent;
@@ -48,6 +50,7 @@ export function selectContext(
   user:      UserProfile,
   memory:    UserMemory,
   planes:    PlanInversion[] = [],
+  efectivo:  number = 0,
 ): ContextSelection {
   const q     = query.toLowerCase();
   const words = q.split(/\W+/).filter(w => w.length > 3);
@@ -76,6 +79,7 @@ export function selectContext(
     // Siempre: si compra 300 al mes, eso cambia cualquier consejo, se pregunte
     // lo que se pregunte.
     planes,
+    efectivo,
     user:      needsUser ? user : null,
     facts,
     intent,

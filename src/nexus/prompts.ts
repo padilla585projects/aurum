@@ -125,6 +125,11 @@ function contextBlock(ctx: ContextSelection): string {
   const parts: string[] = [];
   if (ctx.portfolio) parts.push(portfolioBlock(ctx.portfolio));
   if (ctx.planes?.length) parts.push(bloquePlanes(ctx.planes));
+  if (ctx.efectivo > 0) {
+    // Sin esto, cualquier recomendacion sobre "donde meter dinero" se hace a
+    // ciegas: no se sabe si hay algo que mover o no.
+    parts.push(`## Efectivo disponible\n${Math.round(ctx.efectivo)}€ sin invertir, en cuenta o deposito.`);
+  }
   if (ctx.user)      parts.push(`## Perfil${buildUserBlock(ctx.user).replace(/\n\n## Perfil\n/, '')}`);
   if (ctx.facts.length) parts.push(`## Contexto previo\n${ctx.facts.map(f => `- ${f}`).join('\n')}`);
   return parts.join('\n\n');

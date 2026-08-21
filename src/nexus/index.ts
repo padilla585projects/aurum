@@ -81,13 +81,14 @@ export async function nexusChat(
   onRoute?:  (r: RouteResult) => void,
   user?:     UserProfile,
   planes?:   PlanInversion[],
+  efectivo?: number,
 ): Promise<string> {
   const route = routeAgent(agentKey);
   if (onRoute) onRoute(route);
 
   const lastMsg = [...messages].reverse().find(m => m.role === 'user');
   const query   = typeof lastMsg?.content === 'string' ? lastMsg.content : '';
-  const ctx     = selectContext(query, agentKey, portfolio, user ?? ({} as UserProfile), _memory, planes ?? []);
+  const ctx     = selectContext(query, agentKey, portfolio, user ?? ({} as UserProfile), _memory, planes ?? [], efectivo ?? 0);
 
   let system: string;
   switch (agentKey) {

@@ -21,6 +21,9 @@ export interface PlanInversion {
 
 export const CLAVE_PLANES = 'aurum-planes-inversion';
 
+/** Dinero sin invertir: cuenta, deposito, lo que sea que no este en la cartera. */
+export const CLAVE_EFECTIVO = 'aurum-efectivo';
+
 /** Aportaciones al año de cada frecuencia, para poder compararlas entre sí. */
 const AL_ANO: Record<Frecuencia, number> = {
   semanal: 52,
