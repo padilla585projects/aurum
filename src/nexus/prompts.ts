@@ -1,5 +1,6 @@
 import type { AgentKey, Position, UserProfile } from './types';
 import type { ContextSelection } from './context';
+import { bloquePlanes } from './planes';
 
 // ── Fuentes por agente e intención ────────────────────────────────────────
 const SRC = {
@@ -123,6 +124,7 @@ function portfolioBlock(portfolio: Position[]): string {
 function contextBlock(ctx: ContextSelection): string {
   const parts: string[] = [];
   if (ctx.portfolio) parts.push(portfolioBlock(ctx.portfolio));
+  if (ctx.planes?.length) parts.push(bloquePlanes(ctx.planes));
   if (ctx.user)      parts.push(`## Perfil${buildUserBlock(ctx.user).replace(/\n\n## Perfil\n/, '')}`);
   if (ctx.facts.length) parts.push(`## Contexto previo\n${ctx.facts.map(f => `- ${f}`).join('\n')}`);
   return parts.join('\n\n');

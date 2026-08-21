@@ -36,6 +36,7 @@ import * as store from './store/state';
 import * as compartido from './store/captura-compartida';
 import * as atras from './store/atras';
 import { calcularAvisos } from './nexus/avisos';
+import { CLAVE_PLANES, aportacionMensual, bloquePlanes, normalizarPlan, type PlanInversion } from './nexus/planes';
 import { REVISION_SYSTEM } from './nexus/prompts';
 import { C, PIE_PAL } from './theme';
 import { useSession } from './store/session-context';
@@ -544,6 +545,9 @@ function ChatTab({ profile, portfolio, userProfile }:{ profile:string; portfolio
         () => setSearching(true),
         r  => { setActiveRoute(r); routeResult = r; },
         userProfile,
+        // Los planes periodicos tambien: preguntes lo que preguntes, que compres
+        // 300 al mes cambia la respuesta.
+        await sGet<PlanInversion[]>(CLAVE_PLANES) ?? [],
       );
       const assistantMsg: DisplayMessage = { role:'assistant', content:reply, provider:routeResult?.provider, model:routeResult?.model, agent:agentKey };
       const finalHist = [...withUser, assistantMsg];
@@ -683,6 +687,49 @@ Responde SOLO con JSON válido (sin texto, sin backticks):
 - avgPrice: precio medio de compra en EUR
 - currentPrice: precio actual en EUR (si no aparece, usa avgPrice)
 Si no hay posiciones válidas, responde: []`;
+
+const PLANES_SYSTEM = `Extrae los planes de inversión periódicos (ahorro programado, savings plans, aportaciones automáticas) de la imagen o el texto.
+
+Devuelve SOLO un array JSON, sin explicaciones ni bloques de código:
+[{"ticker":"IWDA","name":"iShares Core MSCI World","amount":100,"frecuencia":"mensual"}]
+
+- amount es el importe de CADA aportación, en euros, no el total acumulado ni el valor de la posición.
+- frecuencia: "semanal", "quincenal", "mensual" o "trimestral".
+- Si algo no es un plan periódico sino una posición ya comprada, no lo incluyas.
+- Si no hay ninguno, devuelve [].`;
+
+/** Lee los planes periódicos de una captura del broker, igual que la cartera. */
+async function parsePlanesWithAI(
+  text?: string,
+  imageB64?: string,
+  imageType?: string,
+): Promise<PlanInversion[]> {
+  const content: unknown[] = [];
+  if (imageB64 && imageType) {
+    content.push({ type:'image', source:{ type:'base64', media_type:imageType, data:imageB64 } });
+  }
+  content.push({ type:'text', text: text || 'Extrae los planes de inversión periódicos de esta imagen.' });
+
+  const raw = await callProvider(
+    { provider: 'gemini', model: MODELO_DE_AJUSTES,
+      fallback: { provider: 'anthropic', model: 'claude-sonnet-5' } },
+    [{ role:'user', content }],
+    PLANES_SYSTEM,
+    undefined, 2048, false,
+  );
+
+  const json = raw.replace(/```[a-z]*\n?|```/g, '').trim();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    throw new Error('No he podido leer los planes de esa imagen. Prueba con una captura más nítida.');
+  }
+  if (!Array.isArray(parsed)) return [];
+  return parsed
+    .map((p, i) => normalizarPlan(p as Record<string, unknown>, i))
+    .filter((p): p is PlanInversion => p !== null);
+}
 
 async function parsePortfolioWithAI(
   text?: string,
@@ -1259,6 +1306,129 @@ function calcAurumScore(portfolio: Position[], profile: string) {
   };
 }
 
+/**
+ * Planes de inversión periódicos.
+ *
+ * La cartera dice lo que tienes; esto dice hacia dónde va. Sin ello el consejo
+ * va cojo: no es lo mismo tener 800 € en un ETF que tener 800 € y estar
+ * metiendo 100 al mes, aunque la foto de hoy sea la misma.
+ */
+function PlanesCard({ planes, setPlanes }: {
+  planes: PlanInversion[];
+  setPlanes: (p: PlanInversion[]) => void;
+}) {
+  const [importando, setImportando] = useState(false);
+  const [error,      setError]      = useState<string|null>(null);
+  const [cargando,   setCargando]   = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const guardar = async (siguientes: PlanInversion[]) => {
+    setPlanes(siguientes);
+    await sSet(CLAVE_PLANES, siguientes);
+  };
+
+  const leer = async (b64: string, tipo: string) => {
+    setCargando(true); setError(null);
+    try {
+      const leidos = await parsePlanesWithAI(undefined, b64, tipo);
+      if (!leidos.length) { setError('No he encontrado planes periódicos en esa imagen.'); return; }
+      await guardar([...planes, ...leidos]);
+      setImportando(false);
+    } catch (e: any) {
+      setError(String(e?.message ?? e));
+    } finally {
+      setCargando(false);
+    }
+  };
+
+  const desdeFichero = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0]; if (!f) return;
+    const lector = new FileReader();
+    lector.onload = () => {
+      const r = lector.result as string;
+      void leer(r.split(',')[1], f.type);
+    };
+    lector.readAsDataURL(f);
+    e.target.value = '';
+  };
+
+  // Pegar la captura con Ctrl+V, igual que en la cartera.
+  useEffect(() => {
+    if (!importando) return;
+    const alPegar = (e: ClipboardEvent) => {
+      const archivo = Array.from(e.clipboardData?.items ?? [])
+        .find(i => i.type.startsWith('image/'))?.getAsFile();
+      if (!archivo) return;
+      e.preventDefault();
+      const lector = new FileReader();
+      lector.onload = () => {
+        const r = lector.result as string;
+        void leer(r.split(',')[1], archivo.type);
+      };
+      lector.readAsDataURL(archivo);
+    };
+    window.addEventListener('paste', alPegar);
+    return () => window.removeEventListener('paste', alPegar);
+  }, [importando, planes]);
+
+  const mensual = Math.round(aportacionMensual(planes));
+
+  return (
+    <div style={{ background:C.surf2, border:`1px solid ${C.border}`, borderRadius:13, padding:'14px 18px', marginBottom:14 }}>
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:12, flexWrap:'wrap' }}>
+        <div>
+          <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.1em', fontWeight:600, color:C.goldL }}>
+            Planes de inversión
+          </div>
+          <div style={{ fontSize:'.68em', color:C.muted, marginTop:2 }}>
+            {planes.length
+              ? `${planes.length} ${planes.length === 1 ? 'plan' : 'planes'} · ~${mensual.toLocaleString('es-ES')} €/mes`
+              : 'Lo que compras cada mes sin pensarlo. AURUM lo tendrá en cuenta al aconsejarte.'}
+          </div>
+        </div>
+        <button onClick={() => { setImportando(v => !v); setError(null); }}
+          style={{ background: importando ? 'transparent' : 'rgba(201,168,76,.12)', border:`1px solid ${importando ? C.border : C.gold + '44'}`, color: importando ? C.muted : C.gold, borderRadius:8, padding:'6px 14px', cursor:'pointer', fontSize:'.74em', fontFamily:"'Sora',sans-serif", whiteSpace:'nowrap' }}>
+          {importando ? '✕ Cancelar' : '✨ Importar de captura'}
+        </button>
+      </div>
+
+      {importando && (
+        <div style={{ marginTop:12, padding:'14px', border:`1px dashed ${C.border2}`, borderRadius:10, textAlign:'center' }}>
+          <div style={{ fontSize:'.72em', color:C.muted, lineHeight:1.6, marginBottom:10 }}>
+            Haz una captura de la pantalla de planes de tu broker y <strong style={{ color:C.text }}>pégala con Ctrl+V</strong>,
+            o súbela desde aquí.
+          </div>
+          <input ref={fileRef} type="file" accept="image/*" onChange={desdeFichero} style={{ display:'none' }} />
+          <button onClick={() => fileRef.current?.click()} disabled={cargando}
+            style={{ background:'transparent', border:`1px solid ${C.border2}`, color:C.muted, borderRadius:8, padding:'6px 14px', cursor:'pointer', fontSize:'.72em', fontFamily:"'Sora',sans-serif" }}>
+            {cargando ? 'Leyendo…' : 'Elegir imagen'}
+          </button>
+        </div>
+      )}
+
+      {error && <div style={{ marginTop:10, fontSize:'.72em', color:C.red }}>{error}</div>}
+
+      {planes.length > 0 && (
+        <div style={{ marginTop:12, display:'flex', flexDirection:'column', gap:6 }}>
+          {planes.map(p => (
+            <div key={p.id} style={{ display:'flex', alignItems:'center', gap:10, fontSize:'.74em' }}>
+              <span style={{ color:C.gold, fontFamily:"'DM Mono',monospace", fontWeight:600, minWidth:70 }}>{p.ticker}</span>
+              <span style={{ color:C.muted, flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{p.name}</span>
+              <span style={{ color:C.text, fontFamily:"'DM Mono',monospace" }}>{p.amount}€</span>
+              <span style={{ color:C.muted, fontSize:'.9em' }}>{p.frecuencia}</span>
+              <button onClick={() => void guardar(planes.filter(x => x.id !== p.id))}
+                title="Quitar este plan"
+                style={{ background:'transparent', border:'none', color:C.faint, cursor:'pointer', fontSize:'.9em', padding:'0 2px' }}>
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface ContextoIndice {
   key: string; name: string;
   desdeMaximoPct: number; periodoPct: number;
@@ -1273,10 +1443,11 @@ interface ContextoIndice {
  * números van calculados de antemano para que la IA no invente ninguno: lo que
  * se le pide es el juicio, no la aritmética.
  */
-function RevisionCard({ portfolio, profile, userProfile }: {
+function RevisionCard({ portfolio, profile, userProfile, planes }: {
   portfolio: Position[];
   profile: string;
   userProfile: UserProfile;
+  planes: PlanInversion[];
 }) {
   const [texto,    setTexto]    = useState<string|null>(null);
   const [cargando, setCargando] = useState(false);
@@ -1330,8 +1501,9 @@ function RevisionCard({ portfolio, profile, userProfile }: {
         // Sin contexto se revisa igual: la cartera y los planes son lo esencial.
       }
 
-      const planes = (userProfile.notes || '').trim();
-      const pregunta = planes
+      const bloqueDePlanes = bloquePlanes(planes);
+      const escritos = (userProfile.notes || '').trim();
+      const pregunta = escritos
         ? `Mis planes:\n${planes}\n\nMis números:\n${hechos}${bloqueMercado}`
         : `No he escrito mis planes todavía.\n\nMis números:\n${hechos}${bloqueMercado}`;
 
@@ -1551,6 +1723,8 @@ function GoalsCard({ totalVal }: { totalVal: number }) {
 }
 
 function PortfolioTab({ portfolio, setPortfolio, profile, userProfile }:{ portfolio:Position[]; setPortfolio:(p:Position[])=>void; profile:string; userProfile:UserProfile }) {
+  const [planes, setPlanes] = useState<PlanInversion[]>([]);
+  useEffect(() => { void sGet<PlanInversion[]>(CLAVE_PLANES).then(p => { if (p) setPlanes(p); }); }, []);
   const empty = { ticker:'', name:'', shares:'', avgPrice:'', currentPrice:'' };
   const [form, setForm]       = useState(empty);
   const [adding, setAdding]   = useState(false);
@@ -1796,7 +1970,8 @@ function PortfolioTab({ portfolio, setPortfolio, profile, userProfile }:{ portfo
         {statCard('Rendimiento', `${pnlPct>=0?'+':''}${pnlPct.toFixed(2)}%`, pnlPct>=0?C.green:C.red)}
       </div>
       {/* Score AURUM */}
-      <RevisionCard portfolio={portfolio} profile={profile} userProfile={userProfile} />
+      <PlanesCard planes={planes} setPlanes={setPlanes} />
+      <RevisionCard portfolio={portfolio} profile={profile} userProfile={userProfile} planes={planes} />
       <AurumScoreCard portfolio={portfolio} profile={profile} />
       {/* Goals tracker */}
       <GoalsCard totalVal={totalVal} />

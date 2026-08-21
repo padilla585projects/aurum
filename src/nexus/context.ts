@@ -1,9 +1,12 @@
 import type { AgentKey, Position, UserMemory, UserProfile } from './types';
+import type { PlanInversion } from './planes';
 
 export type QueryIntent = 'simple' | 'live' | 'analytical' | 'comprehensive';
 
 export interface ContextSelection {
   portfolio:    Position[] | null;
+  /** Lo que compra periodicamente. La cartera dice lo que tiene; esto, hacia donde va. */
+  planes:       PlanInversion[];
   user:         UserProfile | null;
   facts:        string[];
   intent:       QueryIntent;
@@ -44,6 +47,7 @@ export function selectContext(
   portfolio: Position[],
   user:      UserProfile,
   memory:    UserMemory,
+  planes:    PlanInversion[] = [],
 ): ContextSelection {
   const q     = query.toLowerCase();
   const words = q.split(/\W+/).filter(w => w.length > 3);
@@ -69,6 +73,9 @@ export function selectContext(
 
   return {
     portfolio: needsPortfolio && portfolio.length > 0 ? portfolio : null,
+    // Siempre: si compra 300 al mes, eso cambia cualquier consejo, se pregunte
+    // lo que se pregunte.
+    planes,
     user:      needsUser ? user : null,
     facts,
     intent,

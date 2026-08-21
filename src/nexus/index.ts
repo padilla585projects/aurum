@@ -4,6 +4,7 @@ import { routeAgent, routeTask, classifyQuery } from './router';
 import { trimHistory, cacheGet, cacheSet } from './tokens';
 import { loadMemory, saveMemory, extractFacts } from './memory';
 import { selectContext } from './context';
+import type { PlanInversion } from './planes';
 import * as store from '../store/state';
 import {
   buildAurumSystem, buildMacroSystem, buildRiesgoSystem, buildFiscalSystem,
@@ -79,13 +80,14 @@ export async function nexusChat(
   onSearch?: () => void,
   onRoute?:  (r: RouteResult) => void,
   user?:     UserProfile,
+  planes?:   PlanInversion[],
 ): Promise<string> {
   const route = routeAgent(agentKey);
   if (onRoute) onRoute(route);
 
   const lastMsg = [...messages].reverse().find(m => m.role === 'user');
   const query   = typeof lastMsg?.content === 'string' ? lastMsg.content : '';
-  const ctx     = selectContext(query, agentKey, portfolio, user ?? ({} as UserProfile), _memory);
+  const ctx     = selectContext(query, agentKey, portfolio, user ?? ({} as UserProfile), _memory, planes ?? []);
 
   let system: string;
   switch (agentKey) {
