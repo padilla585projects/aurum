@@ -63,9 +63,24 @@ export function buildUserBlock(up: UserProfile): string {
   if (up.horizon) lines.push(`Horizonte: ${up.horizon}`);
   if (up.broker)  lines.push(`Broker: ${up.broker}`);
   if (up.country) lines.push(`País: ${up.country}`);
-  if (up.notes)   lines.push(`Notas: ${up.notes}`);
-  if (!lines.length) return '';
-  return `\n\n## Perfil\n${lines.join(' · ')}`;
+
+  // Los planes van en su propio apartado y no como coletilla de la linea de
+  // datos. Es lo unico del perfil que el usuario escribe con sus palabras, y
+  // aplastado entre la edad y el pais se leia como un dato mas, en vez de
+  // como lo que condiciona todo lo demas.
+  const planes = up.notes?.trim();
+  if (!lines.length && !planes) return '';
+
+  const partes: string[] = [];
+  if (lines.length) partes.push('## Perfil', lines.join(' · '));
+  if (planes) {
+    partes.push(
+      '## Planes y situación del usuario',
+      planes,
+      'Tenlos en cuenta en cada recomendación: mandan sobre cualquier regla general.',
+    );
+  }
+  return ['', '', ...partes].join(String.fromCharCode(10, 10));
 }
 
 function portfolioBlock(portfolio: Position[]): string {

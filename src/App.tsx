@@ -1685,9 +1685,14 @@ function PortfolioTab({ portfolio, setPortfolio, profile }:{ portfolio:Position[
                   ⬇ CSV
                 </button>
               )}
+              {/* El botón grande vive en la pantalla vacía, así que en cuanto
+                  hay una posición desaparece y este era el único camino — pero
+                  pequeño, azul y perdido entre otros cinco. Con posiciones pasa
+                  a ser el mismo dorado que «Añadir», que es su hermano. */}
               <button onClick={()=>setImporting(true)}
-                style={{ background:'rgba(91,156,246,.1)', border:`1px solid #5b9cf644`, color:C.blue, borderRadius:7, padding:'4px 10px', cursor:'pointer', fontSize:'.7em', fontFamily:"'Sora',sans-serif", display:'flex', alignItems:'center', gap:5 }}>
-                ✨ Importar IA
+                title="Añade más posiciones desde una captura o pegando texto"
+                style={{ background: portfolio.length ? 'rgba(201,168,76,.12)' : 'rgba(91,156,246,.1)', border:`1px solid ${portfolio.length ? C.gold + '44' : '#5b9cf644'}`, color: portfolio.length ? C.gold : C.blue, borderRadius:7, padding:'4px 10px', cursor:'pointer', fontSize:'.7em', fontFamily:"'Sora',sans-serif", display:'flex', alignItems:'center', gap:5 }}>
+                {portfolio.length ? '✨ Importar más' : '✨ Importar IA'}
               </button>
               <button onClick={()=>setAdding(v=>!v)}
                 style={{ background:adding?C.faint+'22':'rgba(201,168,76,.12)', border:`1px solid ${adding?C.border:C.gold+'44'}`, color:adding?C.muted:C.gold, borderRadius:7, padding:'4px 10px', cursor:'pointer', fontSize:'.7em', fontFamily:"'Sora',sans-serif" }}>
@@ -4311,12 +4316,23 @@ function SettingsTab({ profile, setProfile, userProfile, setUserProfile }:{
               ))}
             </div>
             <div>
-              <div style={{ fontSize:'.65em', color:C.muted, marginBottom:5, letterSpacing:'.5px' }}>Notas adicionales para la IA</div>
+              {/* Se llamaba «Notas adicionales para la IA», que no le dice a
+                  nadie que aquí es donde van sus planes. Y es lo que más
+                  cambia los consejos: sin esto los agentes solo ven números. */}
+              <div style={{ fontSize:'.65em', color:C.muted, marginBottom:5, letterSpacing:'.5px' }}>
+                Tus planes y tu situación
+              </div>
+              <div style={{ fontSize:'.62em', color:C.faint, marginBottom:7, lineHeight:1.5 }}>
+                Cuéntale a AURUM qué quieres hacer con tu dinero y qué te condiciona. Es lo
+                que más cambia sus consejos: sin esto solo ve números.
+              </div>
               <textarea
                 value={userProfile.notes}
                 onChange={e => setUserProfile({ ...userProfile, notes: e.target.value })}
-                placeholder="Ej: Trabajo en el sector tech, me interesan los ETFs de acumulación, tengo pérdidas fiscales pendientes de compensar…"
-                rows={3}
+                placeholder={'Ej: Quiero comprar piso en 3 o 4 años y necesito tener 40.000 € líquidos para la entrada.\n'
+                  + 'Aporto 300 €/mes y no quiero tocar lo que ya tengo invertido.\n'
+                  + 'Prefiero ETFs de acumulación. Tengo pérdidas fiscales pendientes de compensar.'}
+                rows={5}
                 style={{ ...fieldStyle, resize:'vertical', lineHeight:1.55 }}
               />
             </div>
