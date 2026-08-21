@@ -55,6 +55,9 @@ describe('/api/apk', () => {
   it('la ruta del fichero no se puede pedir directamente', async () => {
     // Es la mitad que hace que lo anterior sirva de algo: sin esto, la APK
     // seguiría descargándose sin sesión por su dirección estática.
-    expect(sinAcceso().status).toBe(404);
+    restaurar = conFicheros(true);
+    const request = new Request('https://aurum.test/descargas/aurum.apk');
+    const res = await sinAcceso({ request, env, data: {}, params: {} } as never);
+    expect(res.status).toBe(404);
   });
 });
