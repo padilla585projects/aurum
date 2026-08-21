@@ -3824,6 +3824,7 @@ function VersionCard() {
 function AvisoActualizacion() {
   const [nueva, setNueva] = useState<{ versionName:string; url:string }|null>(null);
   const [abriendo, setAbriendo] = useState(false);
+  const [fallo,    setFallo]    = useState<string|null>(null);
 
   useEffect(() => {
     if (!isNative) return;
@@ -3853,12 +3854,34 @@ function AvisoActualizacion() {
 
   const instalar = async () => {
     setAbriendo(true);
+    setFallo(null);
+    const enlace = `${API_BASE}${nueva.url}`;
+
+    // La aplicación descarga y llama al instalador de Android. La confirmación
+    // final la sigue pidiendo el sistema —eso no se salta, y está bien que sea
+    // así— pero descargar en Chrome y buscar el fichero a mano sobra.
+    const plugin = (window as unknown as {
+      Capacitor?: { Plugins?: { Instalador?: { instalar: (o:{url:string}) => Promise<unknown> } } };
+    }).Capacitor?.Plugins?.Instalador;
+
+    if (plugin) {
+      try {
+        await plugin.instalar({ url: enlace });
+        setNueva(null);
+        return;
+      } catch (e: any) {
+        // Falta el permiso de instalar, o la descarga no ha ido. El plugin ya
+        // ha abierto los ajustes si era lo primero; aquí se dice el motivo.
+        setFallo(String(e?.message ?? e));
+        setAbriendo(false);
+        return;
+      }
+    }
+
+    // Versiones anteriores al instalador propio: por el navegador, como antes.
     try {
-      // Lo abre el navegador del sistema: instalar una APK exige que la
-      // descarga la haga él. Por eso el enlace lleva un vale firmado — la
-      // sesión de la aplicación no viaja hasta ahí.
       const { Browser } = await import('@capacitor/browser');
-      await Browser.open({ url: `${API_BASE}${nueva.url}` });
+      await Browser.open({ url: enlace });
       setNueva(null);
     } catch {
       setAbriendo(false);
@@ -3873,11 +3896,12 @@ function AvisoActualizacion() {
     }}>
       <span style={{ fontSize:'.72em', color:C.text, lineHeight:1.4 }}>
         Hay una versión nueva de la aplicación ({nueva.versionName}).
+        {fallo && <span style={{ display:'block', color:C.red, fontSize:'.92em' }}>{fallo}</span>}
       </span>
       <div style={{ display:'flex', alignItems:'center', gap:8, flexShrink:0 }}>
         <button onClick={instalar} disabled={abriendo}
           style={{ background:C.gold, border:'none', borderRadius:7, padding:'5px 12px', color:'#07070e', fontWeight:600, cursor: abriendo ? 'default' : 'pointer', fontSize:'.72em', fontFamily:"'Sora',sans-serif", whiteSpace:'nowrap' }}>
-          {abriendo ? 'Abriendo…' : 'Instalar'}
+          {abriendo ? 'Descargando…' : 'Instalar'}
         </button>
         <button onClick={() => setNueva(null)}
           style={{ background:'transparent', border:'none', color:C.muted, cursor:'pointer', fontSize:'.9em', padding:'0 4px' }}>

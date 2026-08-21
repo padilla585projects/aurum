@@ -19,6 +19,7 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(Bundle savedInstanceState) {
         // Antes de super.onCreate: despues el puente ya esta montado y no lo ve.
         registerPlugin(CapturaCompartida.class);
+        registerPlugin(Instalador.class);
         super.onCreate(savedInstanceState);
         leerCompartido(getIntent());
     }

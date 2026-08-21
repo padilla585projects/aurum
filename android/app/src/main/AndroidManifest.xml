@@ -64,4 +64,9 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Para lanzar el instalador con la actualizacion ya descargada, en vez
+         de mandar al usuario a buscar el fichero en Chrome. La confirmacion
+         final la sigue pidiendo Android. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 </manifest>
