@@ -1599,7 +1599,9 @@ function RevisionCard({ portfolio, profile, userProfile, planes }: {
           fallback: { provider: 'anthropic', model: 'claude-sonnet-5' } },
         [{ role: 'user', content: pregunta }],
         REVISION_SYSTEM,
-        undefined, 1500, false,
+        // 1500 se quedaba corto: la revision se cortaba a mitad de la ultima
+        // recomendacion, que es justo la parte accionable.
+        undefined, 3000, false,
       );
       setTexto(respuesta);
       void sSet('aurum-ultima-revision', { fecha: Date.now(), texto: respuesta });
