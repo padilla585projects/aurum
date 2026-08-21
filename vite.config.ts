@@ -2,6 +2,10 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
 export default defineConfig({
+  define: {
+    // Una sola fuente para la version: la del package.json.
+    __APP_VERSION__: JSON.stringify(process.env.npm_package_version ?? '0.0.0'),
+  },
   plugins: [react()],
   build: {
     // Aumenta el límite de advertencia a 600 kB (la app es una SPA con todo incluido)

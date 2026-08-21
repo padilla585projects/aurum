@@ -89,7 +89,9 @@ const bootstrap = () => {
 /* ══════════════════════════════════════════════════════════════
    VERSION
 ══════════════════════════════════════════════════════════════ */
-const APP_VERSION = '1.2.1';
+// Del package.json, para que no haya dos versiones que puedan discrepar:
+// esta llevaba cuatro publicaciones diciendo 1.2.1.
+const APP_VERSION = __APP_VERSION__;
 const APP_BUILD   = '2026.06.24';
 
 /* ══════════════════════════════════════════════════════════════
