@@ -36,7 +36,7 @@ import * as store from './store/state';
 import * as compartido from './store/captura-compartida';
 import * as atras from './store/atras';
 import { calcularAvisos } from './nexus/avisos';
-import { CLAVE_EFECTIVO, CLAVE_PLANES, aportacionMensual, bloquePlanes, normalizarPlan, type PlanInversion } from './nexus/planes';
+import { CLAVE_EFECTIVO, CLAVE_PLANES, aNumero, aportacionMensual, bloquePlanes, normalizarPlan, type PlanInversion } from './nexus/planes';
 import { REVISION_SYSTEM } from './nexus/prompts';
 import { C, PIE_PAL } from './theme';
 import { useSession } from './store/session-context';
@@ -680,14 +680,19 @@ function ChatTab({ profile, portfolio, userProfile }:{ profile:string; portfolio
 /* ══════════════════════════════════════════════════════════════
    PORTFOLIO TAB
 ══════════════════════════════════════════════════════════════ */
-const IMPORT_SYSTEM = `Eres un parser de carteras de inversión. Extrae todas las posiciones del texto/imagen proporcionado.
-Responde SOLO con JSON válido (sin texto, sin backticks):
-[{"ticker":"AAPL","name":"Apple Inc.","shares":10,"avgPrice":150.00,"currentPrice":185.00},...]
-- ticker: símbolo bursátil en mayúsculas (dedúcelo del nombre si no aparece explícito)
-- shares: número de acciones/participaciones (puede ser decimal)
-- avgPrice: precio medio de compra en EUR
-- currentPrice: precio actual en EUR (si no aparece, usa avgPrice)
-Si no hay posiciones válidas, responde: []`;
+const IMPORT_SYSTEM = `Eres un parser de carteras de inversión. Extrae del texto o la imagen las posiciones y, si aparece, el dinero sin invertir.
+
+Responde SOLO con JSON válido, sin texto y sin bloques de código:
+{"posiciones":[{"ticker":"AAPL","name":"Apple Inc.","shares":10,"avgPrice":150.00,"currentPrice":185.00}],"efectivo":1250.75}
+
+- ticker: símbolo bursátil en mayúsculas. Dedúcelo del nombre si no aparece.
+- shares: número de acciones o participaciones (puede ser decimal).
+- avgPrice: precio medio de compra, en euros.
+- currentPrice: precio actual en euros. Si no aparece, usa avgPrice.
+- efectivo: el saldo disponible sin invertir, si la pantalla lo enseña —suele llamarse «efectivo», «disponible», «saldo» o «cash». Si no aparece, pon 0. NO confundas esto con el valor total de la cartera ni con el resultado.
+- Los importes pueden venir en formato español (1.250,75 €). Devuélvelos como número, sin símbolos.
+
+Si no hay posiciones, responde: {"posiciones":[],"efectivo":0}`;
 
 const PLANES_SYSTEM = `Extrae los planes de inversión periódicos de la imagen o el texto.
 
@@ -752,6 +757,20 @@ class PlanesIlegibles extends Error {
   }
 }
 
+/**
+ * Efectivo leído en la última importación, si la captura lo enseñaba.
+ *
+ * Va aparte porque la función devuelve posiciones y cambiarle la forma
+ * obligaría a tocar a todos sus llamantes por un dato que solo interesa a uno.
+ */
+let ultimoEfectivoImportado: number | null = null;
+
+export function tomarEfectivoImportado(): number | null {
+  const v = ultimoEfectivoImportado;
+  ultimoEfectivoImportado = null;
+  return v;
+}
+
 async function parsePortfolioWithAI(
   text?: string,
   imageB64?: string,
@@ -780,8 +799,17 @@ async function parsePortfolioWithAI(
   const json = raw.replace(/```[a-z]*\n?|```/g, '').trim();
 
   let parsed: any[];
+  let efectivoLeido = 0;
   try {
-    parsed = JSON.parse(json) as any[];
+    const bruto = JSON.parse(json);
+    // Se acepta la forma nueva —posiciones y efectivo— y la lista suelta de
+    // antes, por si el modelo se ciñe al formato viejo.
+    if (Array.isArray(bruto)) {
+      parsed = bruto;
+    } else {
+      parsed = Array.isArray(bruto?.posiciones) ? bruto.posiciones : [];
+      efectivoLeido = aNumero(bruto?.efectivo) || 0;
+    }
   } catch {
     // Una respuesta cortada empieza bien y acaba a medias. Decirlo asi da algo
     // que hacer —repetir por partes— en vez de un error de sintaxis.
@@ -796,6 +824,7 @@ async function parsePortfolioWithAI(
   if (!Array.isArray(parsed)) {
     throw new Error('No he podido leer las posiciones de esa imagen.');
   }
+  ultimoEfectivoImportado = efectivoLeido > 0 ? efectivoLeido : null;
   return parsed.map((p, i) => ({
     id: Date.now() + i,
     ticker: String(p.ticker || '?').toUpperCase(),
@@ -2317,6 +2346,13 @@ function PortfolioTab({ portfolio, setPortfolio, profile, userProfile }:{ portfo
           onClose={() => { setImporting(false); setCapturaCompartida(null); }}
           onImport={async positions => {
             await save([...portfolio, ...positions]);
+            // Si la captura traía el saldo, se aprovecha: es justo el dato que
+            // había que meter a mano y estaba delante todo el tiempo.
+            const leido = tomarEfectivoImportado();
+            if (leido !== null) {
+              setEfectivo(leido);
+              await sSet(CLAVE_EFECTIVO, leido);
+            }
             setImporting(false);
             setCapturaCompartida(null);
           }}
