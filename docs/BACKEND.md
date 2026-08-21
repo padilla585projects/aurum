@@ -127,9 +127,12 @@ Con el backend ya conectado, en la misma pantalla de Ajustes introduce el **tel�
 El control anti-robots vigila **entrar**, no **usar una sesión ya abierta**. Así que entras tú, como cualquier día, y le pasas esa sesión a tu backend:
 
 1. Abre `app.traderepublic.com` en tu navegador y entra normalmente.
-2. Pulsa **F12** → pestaña **Aplicación** (o *Application*) → **Cookies** → `traderepublic.com`.
-3. Copia el valor de `tr_session`.
-4. Pégalo en AURUM: **Ajustes → Enlazar Trade Republic**.
+2. Pulsa **F12** → pestaña **Red** (o *Network*).
+3. Recarga la página y abre cualquier petición a `api.traderepublic.com`.
+4. En **Cabeceras de la petición**, copia la línea `Cookie:` **entera**.
+5. Pégala en AURUM: **Ajustes → Enlazar Trade Republic**.
+
+Entera, no solo `tr_session`: TR comprueba varias a la vez —`tr_claims`, `tr_device`, `aws-waf-token`— y copiar la línea completa evita adivinar cuáles hacen falta.
 
 Se guarda cifrada en tu backend y sobrevive a reinicios. Cuando caduque, AURUM te lo dirá y basta con repetir los cuatro pasos.
 

@@ -2999,12 +2999,19 @@ function BackendSection() {
             </div>
 
             {comoVa && (
+              <>
               <ol style={{ fontSize:'.68em', color:C.muted, lineHeight:1.8, margin:'0 0 12px', paddingLeft:20 }}>
                 <li>Entra en <code style={{ color:C.text }}>app.traderepublic.com</code> en este navegador, como cualquier día.</li>
-                <li>Pulsa <strong style={{ color:C.text }}>F12</strong> para abrir las herramientas de desarrollo.</li>
-                <li>Ve a <strong style={{ color:C.text }}>Aplicación</strong> (o <em>Application</em>) → <strong style={{ color:C.text }}>Cookies</strong> → <code style={{ color:C.text }}>traderepublic.com</code>.</li>
-                <li>Copia el valor de <code style={{ color:C.text }}>tr_session</code> y pégalo aquí abajo.</li>
+                <li>Pulsa <strong style={{ color:C.text }}>F12</strong> y ve a la pestaña <strong style={{ color:C.text }}>Red</strong> (o <em>Network</em>).</li>
+                <li>Recarga la página y busca cualquier petición a <code style={{ color:C.text }}>api.traderepublic.com</code>.</li>
+                <li>Ábrela, y en <strong style={{ color:C.text }}>Cabeceras de la petición</strong> busca la línea <code style={{ color:C.text }}>Cookie:</code>. Cópiala <strong style={{ color:C.text }}>entera</strong> y pégala aquí abajo.</li>
               </ol>
+              <div style={{ fontSize:'.66em', color:C.muted, lineHeight:1.6, margin:'0 0 12px' }}>
+                Entera, no solo <code style={{ color:C.text }}>tr_session</code>: Trade Republic
+                comprueba varias a la vez, incluida la del control anti-robots. Copiar la línea
+                completa evita adivinar cuáles hacen falta.
+              </div>
+              </>
             )}
 
             {/* El bloque de fuera ya solo se pinta cuando falta enlazar. */}
@@ -3015,7 +3022,7 @@ function BackendSection() {
                     value={trSesion}
                     onChange={e => setTrSesion(e.target.value)}
                     type="password"
-                    placeholder="tr_session=…"
+                    placeholder="tr_session=…; tr_claims=…; aws-waf-token=…"
                     autoComplete="off"
                     style={{ ...fs, padding:'7px 10px' }}
                   />
