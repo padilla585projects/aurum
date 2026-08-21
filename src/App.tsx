@@ -695,15 +695,37 @@ async function parsePortfolioWithAI(
 
   // Importar cartera es puro reconocimiento de imagen: si el usuario tiene
   // Gemini configurado se hace ahi, y si no vuelve a Claude sola.
+  //
+  // El tope era de 512 tokens, que llegaba para una cartera de ejemplo y se
+  // quedaba corto para una de verdad: la respuesta se cortaba a media posicion
+  // y el JSON incompleto reventaba al leerlo, en mitad del analisis. Con 4096
+  // caben del orden de ochenta posiciones.
   const raw = await callProvider(
     { provider: 'gemini', model: MODELO_DE_AJUSTES,
       fallback: { provider: 'anthropic', model: 'claude-sonnet-5' } },
     [{ role:'user', content }],
     IMPORT_SYSTEM,
-    undefined, 512, false, // sin busqueda web, maximo 512 tokens
+    undefined, 4096, false, // sin busqueda web
   );
   const json = raw.replace(/```[a-z]*\n?|```/g, '').trim();
-  const parsed = JSON.parse(json) as any[];
+
+  let parsed: any[];
+  try {
+    parsed = JSON.parse(json) as any[];
+  } catch {
+    // Una respuesta cortada empieza bien y acaba a medias. Decirlo asi da algo
+    // que hacer —repetir por partes— en vez de un error de sintaxis.
+    if (json.startsWith('[') && !json.trimEnd().endsWith(']')) {
+      throw new Error(
+        'La cartera es más larga de lo que cabe en una respuesta. Prueba a importarla '
+        + 'en dos capturas: lo importado se suma, no se reemplaza.',
+      );
+    }
+    throw new Error('No he podido leer las posiciones de esa imagen. Prueba con una captura más nítida.');
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error('No he podido leer las posiciones de esa imagen.');
+  }
   return parsed.map((p, i) => ({
     id: Date.now() + i,
     ticker: String(p.ticker || '?').toUpperCase(),
