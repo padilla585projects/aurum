@@ -34,6 +34,7 @@ import type {
 import { MODELO_DE_AJUSTES, callAnthropic, callProvider } from './nexus/providers';
 import * as store from './store/state';
 import * as compartido from './store/captura-compartida';
+import * as atras from './store/atras';
 import { C, PIE_PAL } from './theme';
 import { useSession } from './store/session-context';
 import { createInvite } from './store/session';
@@ -735,6 +736,10 @@ function ImportModal({ onImport, onClose, imagenInicial }:{
     reader.readAsDataURL(f);
     e.target.value = '';
   };
+
+  // Con el importador abierto, el botón atrás lo cierra en vez de salir de la
+  // aplicación: lo de arriba se cierra primero.
+  useEffect(() => atras.registrar(onClose), [onClose]);
 
   // Recortar la pantalla deja la imagen en el portapapeles, así que el gesto
   // natural es pegarla aquí — no guardarla en un fichero y volver a buscarla.
@@ -4415,6 +4420,13 @@ export default function App() {
   const userProfileRef  = useRef<UserProfile>(EMPTY_PROFILE);
   const backendCfgRef   = useRef<{url:string;apiKey:string}|null>(null);
 
+  // El oyente del botón atrás se registra una sola vez, así que no puede leer
+  // el estado por cierre: lo vería congelado en el del primer render.
+  const tabRef        = useRef<string>('chat');
+  const showAlertsRef = useRef<boolean>(false);
+  tabRef.current        = tab;
+  showAlertsRef.current = showAlerts;
+
   portfolioRef.current   = portfolio;
   profileRef.current     = profile;
   userProfileRef.current = userProfile;
@@ -4435,6 +4447,28 @@ export default function App() {
     void mirar();
     window.addEventListener('aurumCapturaCompartida', mirar);
     return () => window.removeEventListener('aurumCapturaCompartida', mirar);
+  }, []);
+
+  // El botón atrás del móvil, por orden: primero cierra lo que haya abierto,
+  // después vuelve a la pestaña principal, y solo entonces sale. Sin esto no
+  // hacía nada —la aplicación no tiene historial de navegación— y no había
+  // forma de salir salvo matándola.
+  useEffect(() => {
+    if (!isNative) return;
+    let quitar: (() => void) | null = null;
+
+    (async () => {
+      const { App } = await import('@capacitor/app');
+      const oyente = await App.addListener('backButton', () => {
+        if (showAlertsRef.current) { setShowAlerts(false); return; }
+        if (atras.atender()) return;
+        if (tabRef.current !== 'chat') { setTab('chat'); return; }
+        void App.exitApp();
+      });
+      quitar = () => { void oyente.remove(); };
+    })();
+
+    return () => { quitar?.(); };
   }, []);
 
   // Atajos de teclado globales
