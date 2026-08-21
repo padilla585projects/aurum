@@ -25,6 +25,7 @@ import * as routeGoogleStart from '../../functions/api/auth/google/start.ts';
 import * as routeGoogleCallback from '../../functions/api/auth/google/callback.ts';
 import * as routeState from '../../functions/api/state.ts';
 import * as routeMarket from '../../functions/api/market.ts';
+import * as routeMarketContexto from '../../functions/api/market-contexto.ts';
 import * as routeAnthropic from '../../functions/api/anthropic.ts';
 import * as routeOpenai from '../../functions/api/openai.ts';
 import * as routeDeepseek from '../../functions/api/deepseek.ts';
@@ -52,6 +53,7 @@ const ROUTES: Record<string, HandlerModule> = {
   '/api/auth/google/callback': routeGoogleCallback,
   '/api/state': routeState,
   '/api/market': routeMarket,
+  '/api/market-contexto': routeMarketContexto,
   '/api/anthropic': routeAnthropic,
   '/api/openai': routeOpenai,
   '/api/deepseek': routeDeepseek,

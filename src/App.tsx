@@ -1259,6 +1259,12 @@ function calcAurumScore(portfolio: Position[], profile: string) {
   };
 }
 
+interface ContextoIndice {
+  key: string; name: string;
+  desdeMaximoPct: number; periodoPct: number;
+  volatilidadPct: number; posicionEnRango: number;
+}
+
 /**
  * Revisión: ¿se parece la cartera a lo que dijiste que querías?
  *
@@ -1275,6 +1281,7 @@ function RevisionCard({ portfolio, profile, userProfile }: {
   const [texto,    setTexto]    = useState<string|null>(null);
   const [cargando, setCargando] = useState(false);
   const [error,    setError]    = useState<string|null>(null);
+  const [mercado,  setMercado]  = useState<ContextoIndice[]|null>(null);
 
   const avisos = useMemo(
     () => calcularAvisos(portfolio, profile, userProfile.notes || ''),
@@ -1307,10 +1314,26 @@ function RevisionCard({ portfolio, profile, userProfile }: {
         ...portfolio.map(p => `- ${p.ticker} (${p.name}): ${p.shares} x ${p.currentPrice}€, comprado a ${p.avgPrice}€`),
       ].join('\n');
 
+      // Contexto de mercado: cuentas sobre los cierres de los ultimos meses. Se
+      // le dan hechas para que la IA razone sobre ellas en vez de opinar sobre
+      // el mercado de memoria, que es donde empieza a sonar segura sin serlo.
+      let bloqueMercado = '';
+      try {
+        const { contexto } = await apiFetch<{ contexto: ContextoIndice[] }>('/api/market-contexto');
+        setMercado(contexto);
+        bloqueMercado = '\n\nContexto de mercado (últimos 6 meses, calculado):\n'
+          + contexto.map(c =>
+              `- ${c.name}: ${c.desdeMaximoPct}% desde su máximo, ${c.periodoPct >= 0 ? '+' : ''}${c.periodoPct}% en el periodo, `
+              + `volatilidad ${c.volatilidadPct}%, está al ${c.posicionEnRango}% de su rango`,
+            ).join('\n');
+      } catch {
+        // Sin contexto se revisa igual: la cartera y los planes son lo esencial.
+      }
+
       const planes = (userProfile.notes || '').trim();
       const pregunta = planes
-        ? `Mis planes:\n${planes}\n\nMis números:\n${hechos}`
-        : `No he escrito mis planes todavía.\n\nMis números:\n${hechos}`;
+        ? `Mis planes:\n${planes}\n\nMis números:\n${hechos}${bloqueMercado}`
+        : `No he escrito mis planes todavía.\n\nMis números:\n${hechos}${bloqueMercado}`;
 
       const respuesta = await callProvider(
         { provider: 'gemini', model: MODELO_DE_AJUSTES,
@@ -1353,6 +1376,25 @@ function RevisionCard({ portfolio, profile, userProfile }: {
               <div style={{ fontSize:'.68em', color:C.muted, marginTop:3, lineHeight:1.5 }}>{a.detalle}</div>
             </div>
           ))}
+        </div>
+      )}
+
+      {mercado && mercado.length > 0 && (
+        <div style={{ marginTop:12, paddingTop:12, borderTop:`1px solid ${C.border}` }}>
+          <div style={{ fontSize:'.64em', color:C.muted, marginBottom:6, letterSpacing:'.5px', textTransform:'uppercase' }}>
+            Dónde está el mercado · 6 meses
+          </div>
+          <div style={{ display:'flex', gap:14, flexWrap:'wrap' }}>
+            {mercado.map(c => (
+              <div key={c.key} style={{ fontSize:'.68em', color:C.muted }}>
+                <span style={{ color:C.text }}>{c.name}</span>{' '}
+                <span style={{ color: c.desdeMaximoPct <= -10 ? C.gold : C.muted, fontFamily:"'DM Mono',monospace" }}>
+                  {c.desdeMaximoPct}% del máx
+                </span>{' · '}
+                <span style={{ fontFamily:"'DM Mono',monospace" }}>vol {c.volatilidadPct}%</span>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
