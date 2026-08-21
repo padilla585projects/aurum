@@ -268,8 +268,18 @@ class TRClient:
         trozos = _parsear_galletas(galletas)
         if not trozos:
             raise TRAuthError(
-                "No reconozco ninguna galleta en lo que has pegado. Copia la petición "
-                "como cURL, o la línea entera de cabecera `Cookie`."
+                "No he encontrado ninguna galleta en lo que has pegado. En la pestaña Red, "
+                "clic derecho sobre una peticion a api.traderepublic.com -> Copiar -> "
+                "Copiar como cURL, y pega eso entero."
+            )
+
+        # Las de TR empiezan todas por `tr_`. Si no hay ninguna, lo pegado no es
+        # lo que hace falta, y mandarlo a TR solo produce un 401 sin explicacion.
+        if not any(n.startswith("tr_") for n in trozos):
+            raise TRAuthError(
+                "Eso no trae las galletas de Trade Republic (las suyas empiezan por `tr_`). "
+                f"He encontrado: {sorted(trozos)}. Asegurate de copiar una peticion a "
+                "api.traderepublic.com, no otra cosa de la pagina."
             )
 
         self._galletas = trozos
@@ -578,21 +588,27 @@ def _entre_comillas(texto: str) -> str:
     return texto[:min(posiciones)] if posiciones else texto
 
 
-def _sacar_de_curl(crudo: str) -> str:
-    """Extrae las galletas de un «Copiar como cURL» del navegador.
+def _sacar_cabecera_cookie(crudo: str) -> Optional[str]:
+    """Busca la cabecera `Cookie` en cualquiera de las formas de copiar.
 
-    Buscar la cabecera `Cookie` a mano entre cuarenta es donde se atasca
-    cualquiera; copiar como cURL es un clic derecho. Se hace a mano y no con
-    una expresión regular porque aquí se lee mejor lo que ocurre.
+    Sirve para el «Copiar como cURL» de Chrome y Firefox (`-H 'cookie: …'`),
+    para el de Windows (comillas dobles), y para el «Copiar como fetch», que la
+    mete en un objeto JSON (`"cookie": "…"`). Todas acaban igual: el nombre,
+    dos puntos o comillas de por medio, y el valor entre comillas.
     """
     bajo = crudo.lower()
+    for aguja in ('"cookie":', "'cookie':", "cookie:"):
+        i = bajo.find(aguja)
+        if i == -1:
+            continue
+        resto = crudo[i + len(aguja):].lstrip()
+        if resto[:1] in ("'", '"'):
+            resto = resto[1:]
+        valor = _entre_comillas(resto).strip()
+        if "=" in valor:
+            return valor
 
-    # Forma habitual de Chrome y Firefox: -H 'cookie: a=1; b=2'
-    i = bajo.find("cookie:")
-    if i != -1:
-        return _entre_comillas(crudo[i + len("cookie:"):]).strip()
-
-    # Forma de curl a secas: -b 'a=1; b=2' o --cookie 'a=1; b=2'
+    # curl a secas: -b 'a=1; b=2' o --cookie 'a=1; b=2'
     for bandera in ("--cookie", "-b "):
         i = bajo.find(bandera)
         if i == -1:
@@ -602,30 +618,48 @@ def _sacar_de_curl(crudo: str) -> str:
             resto = resto[1:]
         return _entre_comillas(resto).strip()
 
-    return crudo
+    # «Copiar como PowerShell»: una llamada por galleta.
+    #   $session.Cookies.Add((New-Object System.Net.Cookie("nombre", "valor", …)))
+    if "system.net.cookie" in bajo:
+        parejas = []
+        desde = 0
+        while True:
+            i = bajo.find("system.net.cookie", desde)
+            if i == -1:
+                break
+            desde = i + 1
+            trozo = crudo[i:i + 400]
+            partes = trozo.split('"')
+            if len(partes) >= 4:
+                parejas.append(f"{partes[1]}={partes[3]}")
+        if parejas:
+            return "; ".join(parejas)
+
+    return None
 
 
 def _parsear_galletas(crudo: str) -> dict:
     """Entiende lo que sea que el usuario haya conseguido copiar.
 
-    Vale un «Copiar como cURL», la cabecera `Cookie` entera (`a=1; b=2`), una
-    sola pareja, o el valor suelto del token. Pedirle a alguien que acierte con
-    el formato exacto es pedirle que falle: lo que llega se interpreta.
+    Vale un «Copiar como cURL», un «Copiar como fetch», un «Copiar como
+    PowerShell», la cabecera `Cookie` entera, o el valor suelto del token.
+    Pedirle a alguien que acierte con el formato exacto es pedirle que falle.
     """
     crudo = (crudo or "").strip()
     if not crudo:
         return {}
 
-    if "curl" in crudo[:80].lower():
-        crudo = _sacar_de_curl(crudo)
+    cabecera = _sacar_cabecera_cookie(crudo)
+    if cabecera is not None:
+        crudo = cabecera
+    elif any(p in crudo.lower() for p in ("curl ", "fetch(", "invoke-", "$session", "://")):
+        # Parece una orden o un trozo de codigo del que no se ha sabido sacar
+        # ninguna cabecera. Parsearlo igualmente produce nombres inventados
+        # —como `q`, sacado de una URL— y una peticion a TR condenada a fallar
+        # sin que nadie entienda por que. Mejor decir que no se ha reconocido.
+        return {}
 
     crudo = crudo.strip().strip('"').strip("'").strip()
-
-    # Por si pega la línea entera tal como la muestra el navegador.
-    if crudo.lower().startswith("cookie:"):
-        crudo = crudo.split(":", 1)[1].strip()
-
-    # Una cabecera copiada de la pantalla puede venir partida en varias líneas.
     crudo = " ".join(crudo.split())
 
     if "=" not in crudo:

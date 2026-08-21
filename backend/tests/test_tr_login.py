@@ -181,8 +181,18 @@ class TestSesionCedida:
 
     def test_pegar_cualquier_cosa_no_pasa_por_valido(self):
         tr = TRClient()
-        with pytest.raises(TRAuthError, match="reconozco"):
+        with pytest.raises(TRAuthError, match="No he encontrado"):
             asyncio.run(tr.usar_sesion("   "))
+
+    def test_pegar_algo_sin_galletas_de_tr_se_dice_antes_de_molestar_a_tr(self):
+        """El caso real: llegó una sola galleta llamada `q`, sacada de una URL.
+
+        Mandar eso a TR devuelve un 401 que no explica nada. Se corta antes y
+        se dice qué se ha encontrado, que es lo único accionable.
+        """
+        tr = TRClient()
+        with pytest.raises(TRAuthError, match="He encontrado"):
+            asyncio.run(tr.usar_sesion("q=algo; otra=cosa"))
 
     def test_renovar_avisa_cuando_la_sesion_ha_muerto(self):
         tr = TRClient()
@@ -246,3 +256,38 @@ class TestPegarComoSea:
     def test_sigue_valiendo_la_linea_cookie_a_secas(self):
         from tr_client import _parsear_galletas
         assert _parsear_galletas("Cookie: tr_session=abc; b=2") == {"tr_session": "abc", "b": "2"}
+
+
+class TestMasFormatosDePegado:
+    """Cada navegador ofrece un «Copiar como…» distinto. Valen todos."""
+
+    def test_copiar_como_fetch(self):
+        from tr_client import _parsear_galletas
+        crudo = ('fetch("https://api.traderepublic.com/api/v1/x", {\n'
+                 '  "headers": {\n'
+                 '    "accept": "application/json",\n'
+                 '    "cookie": "tr_session=abc; tr_claims=def"\n'
+                 '  },\n'
+                 '  "method": "GET"\n'
+                 '});')
+        assert _parsear_galletas(crudo) == {"tr_session": "abc", "tr_claims": "def"}
+
+    def test_copiar_como_curl_de_windows_con_comillas_dobles(self):
+        from tr_client import _parsear_galletas
+        crudo = ('curl "https://api.traderepublic.com/api/v1/x" ^\n'
+                 '  -H "cookie: tr_session=abc; tr_device=xyz" ^\n'
+                 '  -H "accept: */*"')
+        assert _parsear_galletas(crudo) == {"tr_session": "abc", "tr_device": "xyz"}
+
+    def test_copiar_como_powershell(self):
+        from tr_client import _parsear_galletas
+        crudo = ('$session = New-Object Microsoft.PowerShell.Commands.WebRequestSession\n'
+                 '$session.Cookies.Add((New-Object System.Net.Cookie("tr_session", "abc", "/", "api.traderepublic.com")))\n'
+                 '$session.Cookies.Add((New-Object System.Net.Cookie("tr_claims", "def", "/", "api.traderepublic.com")))\n'
+                 'Invoke-WebRequest -Uri "https://api.traderepublic.com/x" -WebSession $session')
+        assert _parsear_galletas(crudo) == {"tr_session": "abc", "tr_claims": "def"}
+
+    def test_una_url_pegada_por_error_no_se_confunde_con_galletas(self):
+        """De aquí salía el `q`: una URL parseada como si fuera una galleta."""
+        from tr_client import _parsear_galletas
+        assert _parsear_galletas("https://www.google.com/search?q=trade+republic") == {}
