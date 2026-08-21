@@ -28,6 +28,9 @@ export interface D1Database {
 export interface Env {
   DB: D1Database;
 
+  /** Ficheros estáticos del sitio. Se usa para servir la APK tras el acceso. */
+  ASSETS: { fetch: (request: Request | string) => Promise<Response> };
+
   /**
    * Claves de los proveedores de IA a nivel de proyecto (nunca salen del edge).
    * Son opcionales: cada usuario puede aportar la suya desde Ajustes, y esta

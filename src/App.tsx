@@ -37,7 +37,7 @@ import * as compartido from './store/captura-compartida';
 import { C, PIE_PAL } from './theme';
 import { useSession } from './store/session-context';
 import { createInvite } from './store/session';
-import { ApiError } from './store/api';
+import { ApiError, apiFetchRaw, isNative } from './store/api';
 import { MODELO_AUTOMATICO, deleteProviderKey, fetchModelos, fetchProviderKeys, saveProviderKey,
          type CatalogoModelos, type ProviderKeyStatus } from './store/keys';
 
@@ -3806,6 +3806,70 @@ function VersionCard() {
  * El código de invitación solo se muestra en el momento de crearlo: el servidor
  * guarda únicamente su hash y no puede volver a enseñarlo.
  */
+/**
+ * Descarga de la aplicación para Android.
+ *
+ * Se enseña solo en la web: dentro de la propia aplicación no tiene sentido
+ * ofrecer instalarla. Y no aparece en cada cambio porque no hace falta — la
+ * APK es una carcasa que carga este mismo sitio, así que lo de la web llega
+ * solo al recargar. Solo se reparte una nueva cuando cambia algo nativo.
+ */
+function AplicacionAndroidSection() {
+  const [bajando, setBajando] = useState(false);
+  const [error,   setError]   = useState<string|null>(null);
+
+  if (isNative) return null;
+
+  const descargar = async () => {
+    setBajando(true); setError(null);
+    try {
+      // Va por la API porque la descarga exige sesión: el fichero no está
+      // colgado en ninguna dirección pública.
+      const res = await apiFetchRaw('/api/apk');
+      if (!res.ok) {
+        setError(res.status === 404
+          ? 'Todavía no hay ninguna versión publicada.'
+          : 'No se ha podido descargar.');
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'aurum.apk';
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      setError('No se ha podido descargar.');
+    } finally {
+      setBajando(false);
+    }
+  };
+
+  return (
+    <div>
+      <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.18em', fontWeight:600, color:C.goldL, marginBottom:4 }}>
+        AURUM en el móvil
+      </div>
+      <div style={{ fontSize:'.74em', color:C.muted, marginBottom:14, lineHeight:1.5 }}>
+        La aplicación de Android es una carcasa que abre este mismo sitio, así que
+        lo que cambia en la web te llega sola al recargar. Solo hace falta volver a
+        instalarla cuando cambia algo del propio móvil — como compartir capturas
+        con AURUM.
+      </div>
+      <div style={{ background:C.surf2, border:`1px solid ${C.border}`, borderRadius:13, padding:'16px 20px', display:'flex', alignItems:'center', gap:14, flexWrap:'wrap' }}>
+        <button onClick={descargar} disabled={bajando}
+          style={{ background: bajando ? `${C.gold}44` : C.gold, border:'none', borderRadius:9, padding:'9px 18px', color:'#07070e', fontWeight:600, cursor: bajando ? 'default' : 'pointer', fontSize:'.78em', fontFamily:"'Sora',sans-serif" }}>
+          {bajando ? 'Descargando…' : '⬇ Descargar la APK'}
+        </button>
+        <span style={{ fontSize:'.68em', color:C.muted, lineHeight:1.5 }}>
+          Ábrela en el móvil para instalarla encima de la que tengas.
+          {error && <span style={{ color:C.red, display:'block' }}>{error}</span>}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function AccountSection() {
   const { user, offline, signOut } = useSession();
   const [inviteEmail, setInviteEmail] = useState('');
@@ -4076,6 +4140,8 @@ function SettingsTab({ profile, setProfile, userProfile, setUserProfile }:{
       <div style={{ maxWidth:700, margin:'0 auto', display:'flex', flexDirection:'column', gap:24 }}>
 
         <AccountSection />
+
+        <AplicacionAndroidSection />
 
         <ProviderKeysSection />
 

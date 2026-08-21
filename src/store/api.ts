@@ -58,6 +58,22 @@ export function isOffline(err: unknown): boolean {
   return err instanceof TypeError || (err instanceof ApiError && err.status === 0);
 }
 
+/**
+ * Como `apiFetch`, pero devuelve la respuesta sin tocarla.
+ *
+ * Hace falta para lo que no es JSON —la descarga de la APK— donde intentar
+ * parsearla la destruiría.
+ */
+export async function apiFetchRaw(path: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers);
+  if (isNative) {
+    headers.set('X-AURUM-Client', 'native');
+    const token = getNativeToken();
+    if (token) headers.set('Authorization', `Bearer ${token}`);
+  }
+  return fetch(`${API_BASE}${path}`, { ...init, headers, credentials: 'include' });
+}
+
 export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
