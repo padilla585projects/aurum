@@ -1338,6 +1338,8 @@ function PlanesCard({ planes, setPlanes }: {
   setPlanes: (p: PlanInversion[]) => void;
 }) {
   const [importando, setImportando] = useState(false);
+  const [anadiendo,  setAnadiendo]  = useState(false);
+  const [nuevo,      setNuevo]      = useState({ name:'', amount:'', frecuencia:'mensual' });
   const [error,      setError]      = useState<string|null>(null);
   const [crudo,      setCrudo]      = useState<string|null>(null);
   const [cargando,   setCargando]   = useState(false);
@@ -1365,6 +1367,15 @@ function PlanesCard({ planes, setPlanes }: {
     } finally {
       setCargando(false);
     }
+  };
+
+  const anadirAMano = async () => {
+    const plan = normalizarPlan({ name: nuevo.name, amount: nuevo.amount, frecuencia: nuevo.frecuencia });
+    if (!plan) { setError('Hace falta un nombre y un importe.'); return; }
+    setError(null);
+    await guardar([...planes, plan]);
+    setNuevo({ name:'', amount:'', frecuencia:'mensual' });
+    setAnadiendo(false);
   };
 
   const desdeFichero = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1412,10 +1423,16 @@ function PlanesCard({ planes, setPlanes }: {
               : 'Lo que compras cada mes sin pensarlo. AURUM lo tendrá en cuenta al aconsejarte.'}
           </div>
         </div>
-        <button onClick={() => { setImportando(v => !v); setError(null); }}
-          style={{ background: importando ? 'transparent' : 'rgba(201,168,76,.12)', border:`1px solid ${importando ? C.border : C.gold + '44'}`, color: importando ? C.muted : C.gold, borderRadius:8, padding:'6px 14px', cursor:'pointer', fontSize:'.74em', fontFamily:"'Sora',sans-serif", whiteSpace:'nowrap' }}>
-          {importando ? '✕ Cancelar' : '✨ Importar de captura'}
-        </button>
+        <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+          <button onClick={() => { setImportando(v => !v); setAnadiendo(false); setError(null); }}
+            style={{ background: importando ? 'transparent' : 'rgba(201,168,76,.12)', border:`1px solid ${importando ? C.border : C.gold + '44'}`, color: importando ? C.muted : C.gold, borderRadius:8, padding:'6px 14px', cursor:'pointer', fontSize:'.74em', fontFamily:"'Sora',sans-serif", whiteSpace:'nowrap' }}>
+            {importando ? '✕ Cancelar' : '✨ Importar de captura'}
+          </button>
+          <button onClick={() => { setAnadiendo(v => !v); setImportando(false); setError(null); }}
+            style={{ background:'transparent', border:`1px solid ${C.border2}`, color:C.muted, borderRadius:8, padding:'6px 14px', cursor:'pointer', fontSize:'.74em', fontFamily:"'Sora',sans-serif", whiteSpace:'nowrap' }}>
+            {anadiendo ? '✕ Cancelar' : '+ Añadir a mano'}
+          </button>
+        </div>
       </div>
 
       {importando && (
@@ -1428,6 +1445,36 @@ function PlanesCard({ planes, setPlanes }: {
           <button onClick={() => fileRef.current?.click()} disabled={cargando}
             style={{ background:'transparent', border:`1px solid ${C.border2}`, color:C.muted, borderRadius:8, padding:'6px 14px', cursor:'pointer', fontSize:'.72em', fontFamily:"'Sora',sans-serif" }}>
             {cargando ? 'Leyendo…' : 'Elegir imagen'}
+          </button>
+        </div>
+      )}
+
+      {anadiendo && (
+        <div style={{ marginTop:12, display:'grid', gridTemplateColumns:'2fr 1fr 1fr auto', gap:8, alignItems:'end' }}>
+          <div>
+            <div style={{ fontSize:'.6em', color:C.muted, marginBottom:4 }}>Qué compras</div>
+            <input value={nuevo.name} onChange={e => setNuevo({ ...nuevo, name: e.target.value })}
+              placeholder="Core MSCI World" style={{ ...inputBase, padding:'7px 10px' }} />
+          </div>
+          <div>
+            <div style={{ fontSize:'.6em', color:C.muted, marginBottom:4 }}>Cuánto</div>
+            <input value={nuevo.amount} onChange={e => setNuevo({ ...nuevo, amount: e.target.value })}
+              placeholder="10 €" style={{ ...inputBase, padding:'7px 10px' }}
+              onKeyDown={e => e.key === 'Enter' && void anadirAMano()} />
+          </div>
+          <div>
+            <div style={{ fontSize:'.6em', color:C.muted, marginBottom:4 }}>Cada</div>
+            <select value={nuevo.frecuencia} onChange={e => setNuevo({ ...nuevo, frecuencia: e.target.value })}
+              style={{ ...inputBase, padding:'7px 10px', cursor:'pointer' }}>
+              <option value="semanal">semana</option>
+              <option value="quincenal">quincena</option>
+              <option value="mensual">mes</option>
+              <option value="trimestral">trimestre</option>
+            </select>
+          </div>
+          <button onClick={anadirAMano}
+            style={{ background:C.gold, border:'none', borderRadius:8, padding:'7px 14px', color:'#07070e', fontWeight:600, cursor:'pointer', fontSize:'.74em', fontFamily:"'Sora',sans-serif" }}>
+            Añadir
           </button>
         </div>
       )}
@@ -1456,6 +1503,13 @@ function PlanesCard({ planes, setPlanes }: {
               </button>
             </div>
           ))}
+
+          {/* Sin esto la lista se queda ahí sin explicar qué aporta tenerla. */}
+          <div style={{ marginTop:6, paddingTop:10, borderTop:`1px solid ${C.border}`, fontSize:'.68em', color:C.muted, lineHeight:1.55 }}>
+            AURUM cuenta con estos {Math.round(aportacionMensual(planes)).toLocaleString('es-ES')} €/mes
+            en todo lo que te aconseje: al revisar tu cartera, al proponerte dónde poner dinero nuevo
+            y cuando le preguntes en el chat. Así no te propone aportar algo que ya estás aportando.
+          </div>
         </div>
       )}
     </div>
