@@ -28,5 +28,3 @@ coverage/
 backend/.venv/
 backend/aurum-backend.log
 
-# La APK se copia aqui al desplegar; no se versiona.
-public/descargas/*.apk

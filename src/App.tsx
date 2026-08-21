@@ -37,7 +37,7 @@ import * as compartido from './store/captura-compartida';
 import { C, PIE_PAL } from './theme';
 import { useSession } from './store/session-context';
 import { createInvite } from './store/session';
-import { ApiError, apiFetchRaw, isNative } from './store/api';
+import { API_BASE, ApiError, apiFetch, apiFetchRaw, isNative } from './store/api';
 import { MODELO_AUTOMATICO, deleteProviderKey, fetchModelos, fetchProviderKeys, saveProviderKey,
          type CatalogoModelos, type ProviderKeyStatus } from './store/keys';
 
@@ -3814,6 +3814,80 @@ function VersionCard() {
  * APK es una carcasa que carga este mismo sitio, así que lo de la web llega
  * solo al recargar. Solo se reparte una nueva cuando cambia algo nativo.
  */
+/**
+ * Avisa cuando hay una versión de la aplicación más nueva que la instalada.
+ *
+ * Solo en el móvil, y solo cuando de verdad hay una: la APK es una carcasa que
+ * abre este mismo sitio, así que los cambios de la web llegan al recargar y no
+ * justifican molestar a nadie. Aparece cuando cambia algo nativo.
+ */
+function AvisoActualizacion() {
+  const [nueva, setNueva] = useState<{ versionName:string; url:string }|null>(null);
+  const [abriendo, setAbriendo] = useState(false);
+
+  useEffect(() => {
+    if (!isNative) return;
+    let vigente = true;
+
+    (async () => {
+      try {
+        const { App } = await import('@capacitor/app');
+        const instalada = Number((await App.getInfo()).build);
+        const { publicada } = await apiFetch<{ publicada: { versionCode:number; versionName:string; url:string } | null }>(
+          '/api/apk-actualizacion',
+        );
+        // Sin versión publicada, o con una que no es más nueva, no hay nada
+        // que decir. Un aviso que sale siempre deja de leerse.
+        if (!vigente || !publicada || !Number.isFinite(instalada)) return;
+        if (publicada.versionCode <= instalada) return;
+        setNueva({ versionName: publicada.versionName, url: publicada.url });
+      } catch {
+        // Comprobar actualizaciones no es motivo para romper el arranque.
+      }
+    })();
+
+    return () => { vigente = false; };
+  }, []);
+
+  if (!nueva) return null;
+
+  const instalar = async () => {
+    setAbriendo(true);
+    try {
+      // Lo abre el navegador del sistema: instalar una APK exige que la
+      // descarga la haga él. Por eso el enlace lleva un vale firmado — la
+      // sesión de la aplicación no viaja hasta ahí.
+      const { Browser } = await import('@capacitor/browser');
+      await Browser.open({ url: `${API_BASE}${nueva.url}` });
+      setNueva(null);
+    } catch {
+      setAbriendo(false);
+    }
+  };
+
+  return (
+    <div style={{
+      background:`${C.gold}14`, borderBottom:`1px solid ${C.gold}44`,
+      padding:'9px 16px', display:'flex', alignItems:'center', justifyContent:'space-between',
+      gap:12, flexShrink:0, zIndex:11, position:'relative',
+    }}>
+      <span style={{ fontSize:'.72em', color:C.text, lineHeight:1.4 }}>
+        Hay una versión nueva de la aplicación ({nueva.versionName}).
+      </span>
+      <div style={{ display:'flex', alignItems:'center', gap:8, flexShrink:0 }}>
+        <button onClick={instalar} disabled={abriendo}
+          style={{ background:C.gold, border:'none', borderRadius:7, padding:'5px 12px', color:'#07070e', fontWeight:600, cursor: abriendo ? 'default' : 'pointer', fontSize:'.72em', fontFamily:"'Sora',sans-serif", whiteSpace:'nowrap' }}>
+          {abriendo ? 'Abriendo…' : 'Instalar'}
+        </button>
+        <button onClick={() => setNueva(null)}
+          style={{ background:'transparent', border:'none', color:C.muted, cursor:'pointer', fontSize:'.9em', padding:'0 4px' }}>
+          ✕
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function AplicacionAndroidSection() {
   const [bajando, setBajando] = useState(false);
   const [error,   setError]   = useState<string|null>(null);
@@ -4405,6 +4479,8 @@ export default function App() {
       <div style={{ position:'fixed', top:-120, left:-80, width:380, height:380, borderRadius:'50%', background:`radial-gradient(circle,${C.gold}09 0%,transparent 70%)`, animation:'orb-float 7s ease-in-out infinite', pointerEvents:'none', zIndex:0 }}/>
       <div style={{ position:'fixed', bottom:-80, right:250, width:300, height:300, borderRadius:'50%', background:`radial-gradient(circle,${C.blue}07 0%,transparent 70%)`, animation:'orb-float 9s ease-in-out 3s infinite', pointerEvents:'none', zIndex:0 }}/>
       <div style={{ position:'fixed', inset:0, backgroundImage:`linear-gradient(${C.gold}035 1px,transparent 1px),linear-gradient(90deg,${C.gold}035 1px,transparent 1px)`, backgroundSize:'44px 44px', pointerEvents:'none', zIndex:0 }}/>
+
+      <AvisoActualizacion />
 
       {/* Header compacto mobile */}
       <header style={{

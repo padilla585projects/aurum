@@ -35,6 +35,7 @@ import * as routeKeys from '../../functions/api/keys.ts';
 import * as routeModels from '../../functions/api/models.ts';
 import * as routeBackendConfig from '../../functions/api/backend-config.ts';
 import * as routeApk from '../../functions/api/apk.ts';
+import * as routeApkActualizacion from '../../functions/api/apk-actualizacion.ts';
 
 type Handler = (context: PagesContext) => Promise<Response>;
 type HandlerModule = Record<string, unknown>;
@@ -61,6 +62,7 @@ const ROUTES: Record<string, HandlerModule> = {
   '/api/models': routeModels,
   '/api/backend-config': routeBackendConfig,
   '/api/apk': routeApk,
+  '/api/apk-actualizacion': routeApkActualizacion,
 };
 
 const METHOD_EXPORT: Record<string, string> = {
