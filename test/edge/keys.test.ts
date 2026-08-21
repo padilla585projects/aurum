@@ -9,7 +9,7 @@
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { decryptSecret, encryptSecret, keyHint } from '../../functions/_lib/secrets.ts';
-import { PROVIDERS, validateBody, type Credentials } from '../../functions/_lib/ai-proxy.ts';
+import { MODELO_AUTOMATICO, PROVIDERS, validateBody, type Credentials } from '../../functions/_lib/ai-proxy.ts';
 import { elegirAutomatico } from '../../functions/api/models.ts';
 import { dispatch, seedLoggedIn } from './helpers.ts';
 
@@ -286,9 +286,11 @@ describe('a quién restringe la allowlist', () => {
     expect((res as { body: Record<string, unknown> }).body.max_tokens).toBe(8192);
   });
 
-  it('sin modelo configurado, el proveedor sin allowlist no esta listo', async () => {
-    // Da igual quien ponga la clave: el catalogo de estos proveedores cambia
-    // solo, asi que el modelo tiene que venir configurado junto a ella.
+  it('sin modelo elegido, la clave queda en automatico y no inservible', async () => {
+    // Antes se guardaba sin modelo y esa ruta devolvia 503 para siempre: el
+    // usuario creia haberla configurado y estaba usando el respaldo sin saberlo.
+    // Ahora queda en automatico, que elige del catalogo; aqui no hay catalogo
+    // que consultar, de ahi el 503 distinto — pero ya no es un callejon.
     const { token } = await seedLoggedIn();
     await dispatch('/api/keys', { method: 'PUT', bearer: token, body: { provider: 'grok', key: 'sk-sin-modelo' } });
 
@@ -296,12 +298,37 @@ describe('a quién restringe la allowlist', () => {
       method: 'POST', bearer: token, body: { model: 'lo-que-sea', messages: [] },
     });
     expect(res.status).toBe(503);
-    expect(await res.json()).toMatchObject({ error: { code: 'model_not_configured' } });
+    expect(await res.json()).toMatchObject({ error: { code: 'auto_unavailable' } });
   });
 
   it('los proveedores con clave del usuario no llevan allowlist', () => {
     expect(PROVIDERS.gemini.allowed).toBeUndefined();
     expect(PROVIDERS.grok.allowed).toBeUndefined();
     expect(PROVIDERS.openrouter.allowed).toBeUndefined();
+  });
+});
+
+describe('una clave guardada sin modelo', () => {
+  it('queda en automático en vez de quedarse inservible', async () => {
+    // Sin modelo, esa ruta responde 503 y entra el respaldo: el usuario cree
+    // haber configurado el proveedor y no lo está usando. Lo vimos con Gemini.
+    const { token } = await seedLoggedIn();
+
+    const res = await dispatch('/api/keys', {
+      method: 'PUT', bearer: token,
+      body: JSON.stringify({ provider: 'gemini', key: CLAVE }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json<{ model: string }>()).model).toBe(MODELO_AUTOMATICO);
+  });
+
+  it('un modelo elegido a mano no se pisa', async () => {
+    const { token } = await seedLoggedIn();
+
+    const res = await dispatch('/api/keys', {
+      method: 'PUT', bearer: token,
+      body: JSON.stringify({ provider: 'gemini', key: CLAVE, model: 'gemini-3-pro' }),
+    });
+    expect((await res.json<{ model: string }>()).model).toBe('gemini-3-pro');
   });
 });

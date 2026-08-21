@@ -14,6 +14,7 @@
 import type { PagesContext } from '../_lib/types.ts';
 import { clientIp, fail, json, readJson } from '../_lib/http.ts';
 import { audit } from '../_lib/auth.ts';
+import { MODELO_AUTOMATICO } from '../_lib/ai-proxy.ts';
 import { PROVIDERS, PROVIDER_IDS, isProvider } from '../_lib/ai-proxy.ts';
 import { encryptSecret, keyHint } from '../_lib/secrets.ts';
 
@@ -77,6 +78,12 @@ export async function onRequestPut(context: PagesContext): Promise<Response> {
   if (typeof body.model === 'string' && body.model.trim()) {
     model = body.model.trim().slice(0, MAX_MODEL_LENGTH);
   }
+
+  // Una clave sin modelo es una clave que no hace nada: las rutas responden 503
+  // y entra el respaldo, asi que el usuario cree haberla configurado y no la
+  // esta usando. Si no se elige ninguno, se deja en automatico —el mas barato
+  // del catalogo— que es lo que casi todo el mundo querria de todos modos.
+  if (key && !model) model = MODELO_AUTOMATICO;
 
   const now = Date.now();
 
