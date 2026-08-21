@@ -33,6 +33,7 @@ import type {
 } from './nexus/index';
 import { MODELO_DE_AJUSTES, callAnthropic, callProvider } from './nexus/providers';
 import * as store from './store/state';
+import * as compartido from './store/captura-compartida';
 import { C, PIE_PAL } from './theme';
 import { useSession } from './store/session-context';
 import { createInvite } from './store/session';
@@ -710,10 +711,15 @@ async function parsePortfolioWithAI(
   })).filter(p => p.ticker !== '?' && p.shares > 0);
 }
 
-function ImportModal({ onImport, onClose }:{ onImport:(p:Position[])=>void; onClose:()=>void }) {
-  const [tab,       setTab]     = useState<'paste'|'image'>('paste');
+function ImportModal({ onImport, onClose, imagenInicial }:{
+  onImport:(p:Position[])=>void;
+  onClose:()=>void;
+  /** Captura que llega compartida desde el móvil: se abre con ella puesta. */
+  imagenInicial?: { b64:string; type:string; preview:string } | null;
+}) {
+  const [tab,       setTab]     = useState<'paste'|'image'>(imagenInicial ? 'image' : 'paste');
   const [text,      setText]    = useState('');
-  const [image,     setImage]   = useState<{ b64:string; type:string; preview:string }|null>(null);
+  const [image,     setImage]   = useState<{ b64:string; type:string; preview:string }|null>(imagenInicial ?? null);
   const [parsing,   setParsing] = useState(false);
   const [preview,   setPreview] = useState<Position[]|null>(null);
   const [error,     setError]   = useState('');
@@ -1369,6 +1375,30 @@ function PortfolioTab({ portfolio, setPortfolio, profile }:{ portfolio:Position[
   const [adding, setAdding]   = useState(false);
   const [upd, setUpd]         = useState(false);
   const [importing, setImporting] = useState(false);
+  const [capturaCompartida, setCapturaCompartida] = useState<{ b64:string; type:string; preview:string }|null>(null);
+  const [falloCompartir, setFalloCompartir] = useState<string|null>(null);
+
+  // Una captura compartida desde el móvil abre el importador con ella dentro.
+  // Se mira al montar y también con la pantalla ya abierta, porque compartir
+  // con la aplicación en marcha no vuelve a pasar por aquí.
+  useEffect(() => {
+    const recoger = () => {
+      const fallo = compartido.tomarFallo();
+      if (fallo) { setFalloCompartir(fallo); return; }
+      const captura = compartido.tomar();
+      if (!captura) return;
+      setFalloCompartir(null);
+      setCapturaCompartida({
+        b64: captura.b64,
+        type: captura.tipo,
+        preview: `data:${captura.tipo};base64,${captura.b64}`,
+      });
+      setImporting(true);
+    };
+    recoger();
+    window.addEventListener(compartido.EVENTO_CAPTURA, recoger);
+    return () => window.removeEventListener(compartido.EVENTO_CAPTURA, recoger);
+  }, []);
   const [lastRefresh, setLastRefresh] = useState<Date|null>(null);
   const [portHistory, setPortHistory] = useState<{ date:string; value:number }[]>([]);
   const [sellPos,  setSellPos]  = useState<Position|null>(null);
@@ -1649,6 +1679,19 @@ function PortfolioTab({ portfolio, setPortfolio, profile }:{ portfolio:Position[
               <button onClick={add} style={{ background:C.gold, border:'none', borderRadius:8, padding:'7px 18px', color:'#07070e', fontWeight:600, cursor:'pointer', fontSize:'.78em', fontFamily:"'Sora',sans-serif" }}>Añadir posición</button>
             </div>
           )}
+          {/* Compartir algo y que no pase nada es la peor respuesta posible:
+              si Android no dejó leer la imagen, aquí se dice y se ofrece salida. */}
+          {falloCompartir && (
+            <div style={{ margin:'12px 16px', padding:'10px 14px', background:`${C.red}0e`, border:`1px solid ${C.red}44`, borderRadius:9, fontSize:'.72em', color:C.text, lineHeight:1.6 }}>
+              {falloCompartir}
+              <button
+                onClick={() => { setFalloCompartir(null); setImporting(true); }}
+                style={{ background:'none', border:'none', color:C.blue, cursor:'pointer', padding:0, marginLeft:8, fontSize:'1em', fontFamily:'inherit', textDecoration:'underline' }}
+              >
+                abrir el importador
+              </button>
+            </div>
+          )}
           {portfolio.length===0
             ? (
               /* La pantalla vacía decía «añade tus inversiones» y nada más, así
@@ -1786,10 +1829,12 @@ function PortfolioTab({ portfolio, setPortfolio, profile }:{ portfolio:Position[
       </div>
       {importing && (
         <ImportModal
-          onClose={() => setImporting(false)}
+          imagenInicial={capturaCompartida}
+          onClose={() => { setImporting(false); setCapturaCompartida(null); }}
           onImport={async positions => {
             await save([...portfolio, ...positions]);
             setImporting(false);
+            setCapturaCompartida(null);
           }}
         />
       )}
@@ -4209,6 +4254,24 @@ export default function App() {
   portfolioRef.current   = portfolio;
   profileRef.current     = profile;
   userProfileRef.current = userProfile;
+
+  // Una captura compartida desde otra aplicación entra por aquí: se recoge del
+  // sistema, se lleva al usuario a Cartera y allí se abre el importador. Se
+  // mira también al recibir el aviso, porque compartir con AURUM ya abierto no
+  // vuelve a pasar por el arranque.
+  useEffect(() => {
+    const mirar = async () => {
+      const { captura, fallo } = await compartido.recogerDelSistema();
+      if (!captura && !fallo) return;
+      if (captura) compartido.dejar(captura);
+      else if (fallo) compartido.dejarFallo(fallo);
+      setTab('portfolio');
+      window.dispatchEvent(new Event(compartido.EVENTO_CAPTURA));
+    };
+    void mirar();
+    window.addEventListener('aurumCapturaCompartida', mirar);
+    return () => window.removeEventListener('aurumCapturaCompartida', mirar);
+  }, []);
 
   // Atajos de teclado globales
   useEffect(() => {

@@ -2,7 +2,18 @@ node_modules/
 dist/
 .env
 .env.local
-android/
+# El proyecto de Android lo genera Capacitor, asi que no se versiona entero.
+# Pero lo escrito a mano —el manifiesto y las clases propias— si: sin esto vive
+# en un solo disco, y perderlo significa rehacerlo de memoria.
+android/*
+!android/app/
+android/app/*
+!android/app/src/
+android/app/src/*
+!android/app/src/main/
+android/app/src/main/*
+!android/app/src/main/AndroidManifest.xml
+!android/app/src/main/java/
 ios/
 *.local
 backend/__pycache__/
