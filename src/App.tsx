@@ -688,15 +688,19 @@ Responde SOLO con JSON válido (sin texto, sin backticks):
 - currentPrice: precio actual en EUR (si no aparece, usa avgPrice)
 Si no hay posiciones válidas, responde: []`;
 
-const PLANES_SYSTEM = `Extrae los planes de inversión periódicos (ahorro programado, savings plans, aportaciones automáticas) de la imagen o el texto.
+const PLANES_SYSTEM = `Extrae los planes de inversión periódicos de la imagen o el texto.
+
+Cada fila de la lista es un plan. Suele traer: el nombre de lo que se compra, cada cuánto, y el importe de cada compra.
 
 Devuelve SOLO un array JSON, sin explicaciones ni bloques de código:
-[{"ticker":"IWDA","name":"iShares Core MSCI World","amount":100,"frecuencia":"mensual"}]
+[{"ticker":"","name":"Core MSCI World USD (Acc)","amount":10,"frecuencia":"mensual"}]
 
-- amount es el importe de CADA aportación, en euros, no el total acumulado ni el valor de la posición.
-- frecuencia: "semanal", "quincenal", "mensual" o "trimestral".
-- Si algo no es un plan periódico sino una posición ya comprada, no lo incluyas.
-- Si no hay ninguno, devuelve [].`;
+- **name** es lo importante y nunca puede faltar: cópialo tal cual aparece.
+- **ticker** es opcional. Si la pantalla no lo enseña, déjalo como cadena vacía. NO te lo inventes ni lo deduzcas del nombre.
+- **amount** es el importe de cada aportación: el número que lleva el símbolo de moneda (10 €, 50,00 €). Ignora cualquier otro número de la fila — los contadores de días que faltan para la próxima compra, los porcentajes o los totales acumulados NO son el importe.
+- **frecuencia**: "semanal", "quincenal", "mensual" o "trimestral", según lo que ponga la fila.
+- Incluye TODAS las filas de la lista, aunque se repita el mismo importe.
+- Si de verdad no hay ninguna lista de planes, devuelve [].`;
 
 /** Lee los planes periódicos de una captura del broker, igual que la cartera. */
 async function parsePlanesWithAI(
@@ -725,10 +729,26 @@ async function parsePlanesWithAI(
   } catch {
     throw new Error('No he podido leer los planes de esa imagen. Prueba con una captura más nítida.');
   }
-  if (!Array.isArray(parsed)) return [];
-  return parsed
+  if (!Array.isArray(parsed)) parsed = [];
+
+  const planes = (parsed as unknown[])
     .map((p, i) => normalizarPlan(p as Record<string, unknown>, i))
     .filter((p): p is PlanInversion => p !== null);
+
+  // Si la IA devolvió algo y aquí no sobrevivió nada, el problema está en esta
+  // casa y no en la captura. Enseñar lo que llegó convierte el misterio en algo
+  // que se puede mirar, en vez de mandar al usuario a repetir la foto.
+  if (!planes.length && json && json !== '[]') {
+    throw new PlanesIlegibles(json.slice(0, 600));
+  }
+  return planes;
+}
+
+/** La IA respondió, pero no se ha podido convertir en planes. */
+class PlanesIlegibles extends Error {
+  constructor(public readonly crudo: string) {
+    super('He leído algo, pero no he sabido convertirlo en planes.');
+  }
 }
 
 async function parsePortfolioWithAI(
@@ -1319,6 +1339,7 @@ function PlanesCard({ planes, setPlanes }: {
 }) {
   const [importando, setImportando] = useState(false);
   const [error,      setError]      = useState<string|null>(null);
+  const [crudo,      setCrudo]      = useState<string|null>(null);
   const [cargando,   setCargando]   = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -1328,7 +1349,7 @@ function PlanesCard({ planes, setPlanes }: {
   };
 
   const leer = async (b64: string, tipo: string) => {
-    setCargando(true); setError(null);
+    setCargando(true); setError(null); setCrudo(null);
     try {
       const leidos = await parsePlanesWithAI(undefined, b64, tipo);
       if (!leidos.length) {
@@ -1340,6 +1361,7 @@ function PlanesCard({ planes, setPlanes }: {
       setImportando(false);
     } catch (e: any) {
       setError(String(e?.message ?? e));
+      if (e?.crudo) setCrudo(String(e.crudo));
     } finally {
       setCargando(false);
     }
@@ -1411,6 +1433,13 @@ function PlanesCard({ planes, setPlanes }: {
       )}
 
       {error && <div style={{ marginTop:10, fontSize:'.72em', color:C.red }}>{error}</div>}
+
+      {crudo && (
+        <div style={{ marginTop:8 }}>
+          <div style={{ fontSize:'.66em', color:C.muted, marginBottom:5 }}>Esto es lo que leyó:</div>
+          <pre style={{ margin:0, padding:'8px 10px', background:C.surf, border:`1px solid ${C.border}`, borderRadius:8, fontSize:'.64em', color:C.muted, overflow:'auto', maxHeight:180, whiteSpace:'pre-wrap' }}>{crudo}</pre>
+        </div>
+      )}
 
       {planes.length > 0 && (
         <div style={{ marginTop:12, display:'flex', flexDirection:'column', gap:6 }}>

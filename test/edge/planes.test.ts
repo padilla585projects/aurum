@@ -52,10 +52,18 @@ describe('normalizar un plan', () => {
   });
 
   it('sin ticker se apaña con el nombre en vez de tirar el plan', () => {
-    // La pantalla de planes suele enseñar el nombre del fondo, no su ticker.
-    const p = normalizarPlan({ name: 'Vanguard S&P 500', amount: 75 })!;
-    expect(p.ticker).toBe('VANGUARD');
-    expect(p.name).toBe('Vanguard S&P 500');
+    // La pantalla de planes de Trade Republic no enseña tickers: pone
+    // «Core MSCI World USD (Acc)», «Amazon.com», «SpaceX». Exigirlo dejaba
+    // la importación en «no he encontrado planes».
+    const p = normalizarPlan({ ticker: '', name: 'Core MSCI World USD (Acc)', amount: '10 €' })!;
+    expect(p.name).toBe('Core MSCI World USD (Acc)');
+    expect(p.amount).toBe(10);
+    expect(p.ticker).toBeTruthy();
+  });
+
+  it('lee una fila tal como sale en la pantalla del broker', () => {
+    const p = normalizarPlan({ ticker: '', name: 'Amazon.com', amount: '10 €', frecuencia: 'Mensual' })!;
+    expect(p).toMatchObject({ name: 'Amazon.com', amount: 10, frecuencia: 'mensual' });
   });
 
   it('entiende las frecuencias como las escribe cualquiera', () => {

@@ -88,7 +88,10 @@ export function normalizarPlan(crudo: Record<string, unknown>, indice = 0): Plan
   // veía «no he encontrado ninguno». Si falta, se apaña con el nombre.
   let ticker = String(crudo.ticker ?? crudo.symbol ?? '').trim().toUpperCase();
   if (!ticker && nombre) {
-    ticker = nombre.split(/\s+/)[0].slice(0, 12).toUpperCase();
+    // Del nombre sale una etiqueta corta y reconocible. No es el ticker real
+    // —«Core MSCI World USD (Acc)» no tiene uno en esta pantalla— pero sirve
+    // para que la fila se distinga de un vistazo.
+    ticker = nombre.replace(/[^\w\s]/g, ' ').split(/\s+/).filter(Boolean).slice(0, 2).join(' ').slice(0, 14).toUpperCase();
   }
 
   if (!ticker || !Number.isFinite(amount) || amount <= 0) return null;
