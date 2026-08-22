@@ -106,7 +106,6 @@ const NAV = [
   { id:'portfolio', icon:'📁', label:'Cartera'   },
   { id:'invest',    icon:'💰', label:'Invertir'  },
   { id:'research',  icon:'🔬', label:'Research'  },
-  { id:'control',   icon:'🖥️', label:'Control'   },
   { id:'simulator', icon:'🧮', label:'Simulador' },
   { id:'settings',  icon:'⚙️', label:'Ajustes'   },
 ];
@@ -282,6 +281,12 @@ function MarketTicker() {
       display:'flex', alignItems:'center', height:24, padding:'0 14px',
       gap:0, overflowX:'auto', flexShrink:0, zIndex:9, position:'relative',
       scrollbarWidth:'none',
+      // Se corta a media palabra —«Nasdaq 2…»— porque no cabe. Que se pueda
+      // arrastrar con el dedo, y un desvanecido al final para que se vea que
+      // hay mas en vez de parecer un fallo de pintado.
+      WebkitOverflowScrolling:'touch',
+      maskImage:'linear-gradient(to right, black calc(100% - 28px), transparent)',
+      WebkitMaskImage:'linear-gradient(to right, black calc(100% - 28px), transparent)',
     }}>
       {quotes.map((q, i) => {
         if (q.price === null) return null;
@@ -2284,7 +2289,10 @@ function PortfolioTab({ portfolio, setPortfolio, profile, userProfile }:{ portfo
 
   return (
     <div style={{ padding:'18px 20px', overflow:'auto', height:'100%' }}>
-      {portHistory.length >= 2 && (
+      {/* Con dos puntos la grafica es una recta entre ellos: ocupa un cuarto
+          de la pantalla y no dice nada. A partir de una semana ya se ve una
+          forma, y hasta entonces se ahorra el sitio. */}
+      {portHistory.length >= 7 && (
         <div style={{ marginBottom:14, padding:'12px 16px', background:C.surf2, border:`1px solid ${C.border}`, borderRadius:12, display:'flex', alignItems:'center', gap:16 }}>
           <div>
             <div style={{ fontSize:'.58em', letterSpacing:'1.5px', color:C.muted, textTransform:'uppercase', marginBottom:2 }}>Historial 30d</div>
@@ -3456,8 +3464,14 @@ function InvestTab({ profile, portfolio, setPortfolio, userProfile, onNavigate }
 
         {/* Header */}
         <div>
-          <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.5em', fontWeight:600, color:C.goldL, marginBottom:4 }}>Invertir con AURUM</div>
-          <div style={{ fontSize:'.78em', color:C.muted }}>AURUM analiza el mercado, propone el plan y lo ejecuta. Tú solo dices <strong style={{ color:C.text }}>Sí</strong>.</div>
+          <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:'1.5em', fontWeight:600, color:C.goldL, marginBottom:4 }}>Plan de inversión</div>
+          {/* Decía que AURUM «lo ejecuta» y que tú solo dices que sí. No ejecuta
+              nada: Trade Republic cerró el acceso. Prometer lo que no se hace
+              cuesta días de buscar un fallo que no existe. */}
+          <div style={{ fontSize:'.78em', color:C.muted, lineHeight:1.5 }}>
+            AURUM mira tu cartera y tus planes y te dice qué comprar y por cuánto.
+            Las órdenes <strong style={{ color:C.text }}>las metes tú</strong> en tu broker.
+          </div>
         </div>
 
         {/* Panel de análisis de cartera — solo cuando hay posiciones */}
@@ -5090,7 +5104,6 @@ function BottomNav({ tab, setTab, alertCount, onAlertOpen }: {
     { id:'portfolio', icon:'📊', label:'Cartera',  shortcut:'Ctrl+2' },
     { id:'invest',    icon:'💰', label:'Invertir', shortcut:'Ctrl+3' },
     { id:'research',  icon:'🔬', label:'Research', shortcut:'Ctrl+4' },
-    { id:'control',   icon:'🖥️', label:'Control',  shortcut:'Ctrl+5' },
     { id:'settings',  icon:'⚙️', label:'Ajustes',  shortcut:'Ctrl+6' },
   ];
   return (
@@ -5280,26 +5293,33 @@ export default function App() {
         padding:`calc(10px + env(safe-area-inset-top, 0px)) 16px 10px`,
         flexShrink:0, zIndex:10, position:'relative',
       }}>
-        <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-          <div style={{ width:32, height:32, borderRadius:9, background:`linear-gradient(135deg,${C.goldD},${C.goldL})`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:15, fontWeight:800, color:'#07070e', fontFamily:"'Cormorant Garamond',serif", boxShadow:`0 0 16px ${C.gold}40`, flexShrink:0 }}>A</div>
-          <div>
-            <div style={{ fontSize:'.82em', fontWeight:600, color:C.text, lineHeight:1.2 }}>AURUM <span style={{ color:C.gold, fontFamily:"'Cormorant Garamond',serif", fontStyle:'italic', fontWeight:400 }}>Nexus</span> <span style={{ fontSize:'.65em', color:C.faint, fontFamily:"'DM Mono',monospace", fontWeight:400 }}>v{APP_VERSION}</span></div>
-            <div style={{ fontSize:'.56em', color:C.faint, display:'flex', gap:5, alignItems:'center', marginTop:1 }}>
-              {pf.emoji} <span style={{ color:pf.color }}>{pf.label}</span>
-              {portfolio.length>0 && (() => {
-                const val  = portfolio.reduce((a,p)=>a+p.shares*p.currentPrice,0);
-                const cost = portfolio.reduce((a,p)=>a+p.shares*p.avgPrice,0);
-                const pnlP = cost ? (val-cost)/cost*100 : 0;
-                return (
-                  <>
-                    <span style={{ color:C.muted }}>·</span>
-                    <span style={{ color:C.text, fontFamily:"'DM Mono',monospace" }}>{val.toLocaleString('es-ES',{maximumFractionDigits:0})}€</span>
-                    {cost > 0 && <span style={{ color:pnlP>=0?C.green:C.red, fontWeight:600 }}>{pnlP>=0?'▲':'▼'}{Math.abs(pnlP).toFixed(1)}%</span>}
-                  </>
-                );
-              })()}
-            </div>
-          </div>
+        {/* Antes ocupaba dos lineas: nombre, version, perfil, valor y
+            rendimiento, cada cosa en su renglon. En un movil eran tres dedos de
+            alto que no cambian nunca. Ahora va todo en una: lo que de verdad se
+            mira —cuanto tienes y como va— con el mismo tamaño de siempre, y lo
+            demas reducido a la marca. La version se ve en Ajustes. */}
+        <div style={{ display:'flex', alignItems:'center', gap:9, minWidth:0, flex:1 }}>
+          <div style={{ width:26, height:26, borderRadius:8, background:`linear-gradient(135deg,${C.goldD},${C.goldL})`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:13, fontWeight:800, color:'#07070e', fontFamily:"'Cormorant Garamond',serif", boxShadow:`0 0 12px ${C.gold}40`, flexShrink:0 }}>A</div>
+          <span style={{ fontSize:'.8em', fontWeight:600, color:C.text, flexShrink:0 }}>AURUM</span>
+          <span style={{ fontSize:'.62em', color:pf.color, flexShrink:0 }}>{pf.emoji}</span>
+
+          {portfolio.length>0 && (() => {
+            const val  = portfolio.reduce((a,p)=>a+p.shares*p.currentPrice,0);
+            const cost = portfolio.reduce((a,p)=>a+p.shares*p.avgPrice,0);
+            const pnlP = cost ? (val-cost)/cost*100 : 0;
+            return (
+              <div style={{ display:'flex', alignItems:'baseline', gap:6, marginLeft:'auto', minWidth:0 }}>
+                <span style={{ fontSize:'.82em', color:C.text, fontFamily:"'DM Mono',monospace", fontWeight:600 }}>
+                  {val.toLocaleString('es-ES',{maximumFractionDigits:0})}€
+                </span>
+                {cost > 0 && (
+                  <span style={{ fontSize:'.72em', color:pnlP>=0?C.green:C.red, fontWeight:600, fontFamily:"'DM Mono',monospace" }}>
+                    {pnlP>=0?'▲':'▼'}{Math.abs(pnlP).toFixed(1)}%
+                  </span>
+                )}
+              </div>
+            );
+          })()}
         </div>
 
       </header>
