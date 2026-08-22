@@ -118,24 +118,67 @@ export async function listarModelos(
 }
 
 /**
- * Modelo que elige el modo automatico: el mas barato que sirva para conversar,
- * con contexto suficiente para el uso de AURUM.
+ * Modelo que elige el modo automatico.
  *
- * Solo se ofrece donde el proveedor publica precios. Sin ese dato, «el mas
- * barato» seria una lista fija en el codigo, que es justo lo que envejece mal.
+ * Con precios publicados —solo OpenRouter los da— se elige el mas barato que
+ * sirva para conversar. Sin ellos habia que rendirse, y eso dejaba «auto»
+ * inservible en OpenAI, Gemini, Grok y DeepSeek: cuatro de cinco proveedores
+ * respondian 503 en cuanto se les ponia en automatico.
+ *
+ * Asi que sin precios se recurre al nombre, que es la unica pista que dan sus
+ * catalogos. No es elegante, pero se actualiza solo con el catalogo del
+ * proveedor —a diferencia de una lista fija en el codigo, que envejece— y
+ * cualquier eleccion es mejor que no poder contestar.
  */
 const CONTEXTO_MINIMO = 32_000;
 
+/**
+ * Nombres de la gama barata de cada casa, del mas economico al menos. Se
+ * comparan sobre el identificador del modelo, en minusculas.
+ */
+const GAMA_ECONOMICA = ['nano', 'mini', 'flash', 'haiku', 'lite', 'small', 'turbo'];
+
+/** Lo que no sirve para conversar aunque aparezca en el catalogo. */
+const NO_CONVERSACIONAL = [
+  'embed', 'whisper', 'tts', 'dall-e', 'moderation', 'audio', 'realtime',
+  'image', 'vision-preview', 'transcribe', 'search', 'rerank', 'guard',
+];
+
+function sirveParaConversar(id: string): boolean {
+  const bajo = id.toLowerCase();
+  return !NO_CONVERSACIONAL.some(p => bajo.includes(p));
+}
+
 export function elegirAutomatico(modelos: ModeloDisponible[]): ModeloDisponible | null {
-  const aptos = modelos.filter(m => m.salida !== null && (m.contexto ?? 0) >= CONTEXTO_MINIMO);
-  if (aptos.length === 0) return null;
-  // Ya vienen ordenados por precio; a igual precio, mas contexto.
-  return aptos.reduce((mejor, m) => {
-    const masBarato = (m.salida ?? Infinity) < (mejor.salida ?? Infinity);
-    const igualDePrecioYMayor = (m.salida ?? Infinity) === (mejor.salida ?? Infinity)
-      && (m.contexto ?? 0) > (mejor.contexto ?? 0);
-    return masBarato || igualDePrecioYMayor ? m : mejor;
-  });
+  const conversacionales = modelos.filter(m => sirveParaConversar(m.id));
+  if (conversacionales.length === 0) return null;
+
+  // Camino bueno: hay precios, se elige por dinero.
+  const conPrecio = conversacionales.filter(m => m.salida !== null && (m.contexto ?? 0) >= CONTEXTO_MINIMO);
+  if (conPrecio.length > 0) {
+    return conPrecio.reduce((mejor, m) => {
+      const masBarato = (m.salida ?? Infinity) < (mejor.salida ?? Infinity);
+      const igualDePrecioYMayor = (m.salida ?? Infinity) === (mejor.salida ?? Infinity)
+        && (m.contexto ?? 0) > (mejor.contexto ?? 0);
+      return masBarato || igualDePrecioYMayor ? m : mejor;
+    });
+  }
+
+  // Sin precios: se busca la gama barata por su nombre, en orden de preferencia.
+  for (const gama of GAMA_ECONOMICA) {
+    const candidatos = conversacionales.filter(m => m.id.toLowerCase().includes(gama));
+    if (candidatos.length > 0) {
+      // Entre los de la misma gama, el de identificador mas corto suele ser el
+      // estable —«gpt-5-mini» frente a «gpt-5-mini-2026-03-11-preview»—, y un
+      // alias estable envejece mejor que una fecha concreta.
+      return candidatos.reduce((mejor, m) => (m.id.length < mejor.id.length ? m : mejor));
+    }
+  }
+
+  // Ni precios ni gama reconocible: el primero que sirva para hablar. El
+  // catalogo ya viene ordenado por el proveedor, y contestar con algo es mejor
+  // que no contestar.
+  return conversacionales[0];
 }
 
 export async function onRequestGet(context: PagesContext): Promise<Response> {

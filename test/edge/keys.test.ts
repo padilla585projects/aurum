@@ -242,8 +242,13 @@ describe('eleccion automatica de modelo', () => {
     expect(elegirAutomatico(soloCorto)!.id).toBe('caro/grande');
   });
 
-  it('sin precios publicados no elige nada, en vez de adivinar', () => {
-    expect(elegirAutomatico([catalogo[3]])).toBeNull();
+  it('sin precios publicados elige igualmente, en vez de dejar el proveedor inservible', () => {
+    // Antes se rendía aquí, por no adivinar. La consecuencia fue peor que el
+    // problema: el catálogo de OpenAI, Gemini, Grok y DeepSeek no publica
+    // precios, así que «auto» respondía 503 en cuatro de los cinco proveedores.
+    // Elegir por el nombre no es exacto, pero se actualiza con el catálogo y
+    // deja la aplicación funcionando.
+    expect(elegirAutomatico([catalogo[3]])?.id).toBe(catalogo[3].id);
   });
 
   it('sin catalogo no elige nada', () => {
@@ -330,5 +335,49 @@ describe('una clave guardada sin modelo', () => {
       body: JSON.stringify({ provider: 'gemini', key: CLAVE, model: 'gemini-3-pro' }),
     });
     expect((await res.json<{ model: string }>()).model).toBe('gemini-3-pro');
+  });
+});
+
+describe('el modo automático sin precios publicados', () => {
+  const m = (id: string, salida: number|null = null, contexto: number|null = null) =>
+    ({ id, salida, contexto, gratuito: false } as never);
+
+  it('con precios elige el más barato con contexto suficiente', () => {
+    const elegido = elegirAutomatico([
+      m('caro', 10, 128_000), m('barato', 1, 128_000), m('barato-sin-contexto', 0.5, 8_000),
+    ]);
+    expect(elegido?.id).toBe('barato');
+  });
+
+  it('sin precios elige la gama barata por su nombre', () => {
+    // El catálogo de OpenAI no publica precios ni contexto: solo identificadores.
+    // Antes esto devolvía null y la ruta respondía 503 para siempre.
+    const elegido = elegirAutomatico([m('gpt-5'), m('gpt-5-mini'), m('gpt-5-pro')]);
+    expect(elegido?.id).toBe('gpt-5-mini');
+  });
+
+  it('prefiere el alias estable a la versión con fecha', () => {
+    const elegido = elegirAutomatico([m('gpt-5-mini-2026-03-11-preview'), m('gpt-5-mini')]);
+    expect(elegido?.id).toBe('gpt-5-mini');
+  });
+
+  it('respeta el orden de la gama: nano antes que mini', () => {
+    expect(elegirAutomatico([m('gpt-5-mini'), m('gpt-5-nano')])?.id).toBe('gpt-5-nano');
+  });
+
+  it('no elige cosas que no sirven para conversar', () => {
+    const elegido = elegirAutomatico([
+      m('text-embedding-3-small'), m('whisper-1'), m('dall-e-3'), m('gpt-5'),
+    ]);
+    expect(elegido?.id).toBe('gpt-5');
+  });
+
+  it('sin gama reconocible contesta con algo antes que fallar', () => {
+    expect(elegirAutomatico([m('deepseek-chat'), m('deepseek-reasoner')])?.id).toBe('deepseek-chat');
+  });
+
+  it('si no hay nada conversacional sí se rinde', () => {
+    expect(elegirAutomatico([m('text-embedding-3-small'), m('whisper-1')])).toBeNull();
+    expect(elegirAutomatico([])).toBeNull();
   });
 });
