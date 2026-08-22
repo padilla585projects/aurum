@@ -237,3 +237,39 @@ describe('proxy de OpenAI', () => {
     expect(uso).toMatchObject({ provider: 'openai', cached_tokens: 2 });
   });
 });
+
+describe('parámetros que solo valen para el modelo pedido', () => {
+  it('la búsqueda web se quita si el modelo que acaba yendo no la admite', async () => {
+    // El cliente elige un modelo con búsqueda y añade web_search_options; el
+    // servidor sustituye el modelo por el del usuario, y OpenAI rechazaba la
+    // petición entera con «Unknown parameter».
+    const { token } = await seedLoggedIn();
+    await dispatch('/api/keys', { method: 'PUT', bearer: token,
+      body: { provider: 'openai', key: 'sk-propia-de-prueba', model: 'gpt-5-mini' } });
+    const espia = interceptarFetch(() => respuestaJson({ choices: [{ message: { content: 'ok' } }] }));
+
+    await dispatch('/api/openai', {
+      method: 'POST', bearer: token,
+      body: { model: 'gpt-4o-search-preview', messages: [], web_search_options: { search_context_size: 'medium' } },
+    });
+
+    const enviado = JSON.parse((espia.mock.calls[0][1] as RequestInit).body as string);
+    expect(enviado.model).toBe('gpt-5-mini');
+    expect(enviado.web_search_options).toBeUndefined();
+  });
+
+  it('con un modelo de búsqueda se respeta', async () => {
+    const { token } = await seedLoggedIn();
+    await dispatch('/api/keys', { method: 'PUT', bearer: token,
+      body: { provider: 'openai', key: 'sk-propia-de-prueba', model: 'gpt-4o-search-preview' } });
+    const espia = interceptarFetch(() => respuestaJson({ choices: [{ message: { content: 'ok' } }] }));
+
+    await dispatch('/api/openai', {
+      method: 'POST', bearer: token,
+      body: { model: 'gpt-4o-search-preview', messages: [], web_search_options: { search_context_size: 'medium' } },
+    });
+
+    const enviado = JSON.parse((espia.mock.calls[0][1] as RequestInit).body as string);
+    expect(enviado.web_search_options).toEqual({ search_context_size: 'medium' });
+  });
+});

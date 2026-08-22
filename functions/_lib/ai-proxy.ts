@@ -167,6 +167,16 @@ export async function validateBody(
     return fail(400, 'bad_request', 'El cuerpo no es JSON válido.');
   }
 
+  // La busqueda web es un extra de modelos concretos —los que llevan «search»
+  // en el nombre— y OpenAI rechaza la peticion entera si se la mandas a otro.
+  // Como aqui se puede sustituir el modelo por el del usuario o el de
+  // automatico, un parametro que era valido para el modelo pedido deja de
+  // serlo para el que acaba yendo. Se quita en vez de dejar que reviente.
+  if (body['web_search_options'] !== undefined) {
+    const modeloFinal = credentials.model || (typeof body.model === 'string' ? body.model : '');
+    if (!modeloFinal.toLowerCase().includes('search')) delete body['web_search_options'];
+  }
+
   // El modelo configurado manda sobre el que pida el cliente: es el que
   // corresponde a esa clave y a su catálogo, la aporte el usuario o el proyecto.
   if (credentials.model) body.model = credentials.model;
