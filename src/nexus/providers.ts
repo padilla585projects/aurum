@@ -156,7 +156,16 @@ export async function callOpenAI(
     input_tokens:  data.usage.prompt_tokens,
     output_tokens: data.usage.completion_tokens,
   }, useWebSearch);
-  return data.choices?.[0]?.message?.content?.trim() || 'Sin respuesta.';
+  const contenido = data.choices?.[0]?.message?.content?.trim();
+  if (contenido) return contenido;
+
+  // Un modelo de razonamiento puede gastarse el presupuesto pensando y no
+  // llegar a escribir nada. «Sin respuesta» no dice que hacer; esto si.
+  if (data.choices?.[0]?.finish_reason === 'length') {
+    return 'El modelo se ha quedado sin espacio antes de responder. '
+      + 'Prueba a elegir otro modelo para este proveedor en Ajustes → Claves de IA.';
+  }
+  return 'Sin respuesta.';
 }
 
 // ── DeepSeek / R1 + V3 ──────────────────────────────────────────────────────

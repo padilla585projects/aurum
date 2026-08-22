@@ -361,8 +361,12 @@ describe('el modo automático sin precios publicados', () => {
     expect(elegido?.id).toBe('gpt-5-mini');
   });
 
-  it('respeta el orden de la gama: nano antes que mini', () => {
-    expect(elegirAutomatico([m('gpt-5-mini'), m('gpt-5-nano')])?.id).toBe('gpt-5-nano');
+  it('descarta la gama nano aunque sea la más barata', () => {
+    // gpt-5-nano es de razonamiento: con el presupuesto de una conversación se
+    // lo gasta pensando y devuelve texto vacío. Salía «Sin respuesta.», que es
+    // peor que un error porque no dice qué hacer.
+    expect(elegirAutomatico([m('gpt-5-mini'), m('gpt-5-nano')])?.id).toBe('gpt-5-mini');
+    expect(elegirAutomatico([m('gpt-5-nano')])).toBeNull();
   });
 
   it('no elige cosas que no sirven para conversar', () => {

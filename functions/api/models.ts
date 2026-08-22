@@ -136,7 +136,16 @@ const CONTEXTO_MINIMO = 32_000;
  * Nombres de la gama barata de cada casa, del mas economico al menos. Se
  * comparan sobre el identificador del modelo, en minusculas.
  */
-const GAMA_ECONOMICA = ['nano', 'mini', 'flash', 'haiku', 'lite', 'small', 'turbo'];
+const GAMA_ECONOMICA = ['mini', 'flash', 'haiku', 'lite', 'small', 'turbo'];
+
+/**
+ * Gamas que salen baratas y no sirven para esto.
+ *
+ * `gpt-5-nano` es de razonamiento: con el presupuesto de tokens de una
+ * conversacion normal se lo gasta entero pensando y devuelve un texto vacio.
+ * Elegirlo por barato daba respuestas en blanco, que es peor que un error.
+ */
+const GAMA_DESCARTADA = ['nano'];
 
 /** Lo que no sirve para conversar aunque aparezca en el catalogo. */
 const NO_CONVERSACIONAL = [
@@ -146,7 +155,8 @@ const NO_CONVERSACIONAL = [
 
 function sirveParaConversar(id: string): boolean {
   const bajo = id.toLowerCase();
-  return !NO_CONVERSACIONAL.some(p => bajo.includes(p));
+  if (NO_CONVERSACIONAL.some(p => bajo.includes(p))) return false;
+  return !GAMA_DESCARTADA.some(p => bajo.includes(p));
 }
 
 export function elegirAutomatico(modelos: ModeloDisponible[]): ModeloDisponible | null {
