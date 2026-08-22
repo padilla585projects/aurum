@@ -2325,14 +2325,19 @@ function PortfolioTab({ portfolio, setPortfolio, profile, userProfile }:{ portfo
         {statCard('P&L total', `${pnl>=0?'+':''}${fmtEur(pnl)}`, pnl>=0?C.green:C.red)}
         {statCard('Rendimiento', `${pnlPct>=0?'+':''}${pnlPct.toFixed(2)}%`, pnlPct>=0?C.green:C.red)}
       </div>
-      {/* Score AURUM */}
-      <PlanesCard planes={planes} setPlanes={setPlanes} />
-      <OperacionesCard operaciones={operaciones} setOperaciones={setOperaciones} />
+      {/* El orden es el de la frecuencia con que se mira cada cosa. «¿Lo estoy
+          haciendo bien?» es la pregunta de cada dia y estaba la cuarta,
+          despues de dos tarjetas que se tocan una vez al mes. */}
       <RevisionCard portfolio={portfolio} profile={profile} userProfile={userProfile} planes={planes}
         efectivo={efectivo} setEfectivo={setEfectivo} operaciones={operaciones} />
       <AurumScoreCard portfolio={portfolio} profile={profile} />
       {/* Goals tracker */}
       <GoalsCard totalVal={totalVal} />
+      {/* Lo que se actualiza de mes en mes, debajo: importar planes o ventas no
+          es algo que se haga al abrir la aplicacion. */}
+      <PlanesCard planes={planes} setPlanes={setPlanes} />
+      <OperacionesCard operaciones={operaciones} setOperaciones={setOperaciones} />
+
       {/* Feature 1: Tax Harvesting Card */}
       <TaxCard portfolio={portfolio} />
       <div style={{ display:'grid', gridTemplateColumns:portfolio.length?'1fr 220px':'1fr', gap:14, alignItems:'start' }}>
@@ -3474,42 +3479,17 @@ function InvestTab({ profile, portfolio, setPortfolio, userProfile, onNavigate }
           </div>
         </div>
 
-        {/* Panel de análisis de cartera — solo cuando hay posiciones */}
+        {/* Aquí había tres tarjetas —desviación, riesgo y peor crisis— que son
+            exactamente las que ya salen en Cartera, en el Score y en los
+            avisos. Dos pantallas diciendo lo mismo con distinta cara invitan a
+            compararlas en vez de a leerlas. Queda solo el aviso que explica el
+            plan que viene debajo, y solo cuando hay algo que avisar. */}
         {portfolio.length > 0 && (phase === 'idle' || phase === 'loading') && (() => {
           const drift = detectDrift(portfolio, profile);
-          const risk  = portfolioRiskScore(portfolio);
-          const stress = stressTest(portfolio);
-          const worst = stress.length ? stress.reduce((a, b) => a.portfolioDropPct < b.portfolioDropPct ? a : b) : null;
+          if (!drift.needsRebal) return null;
           return (
-            <Card style={{ padding:'16px 18px', background:`${C.surf3}` }}>
-              <div style={{ fontSize:'.62em', letterSpacing:'2px', color:C.muted, textTransform:'uppercase', marginBottom:12 }}>Diagnóstico de cartera</div>
-              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:12 }}>
-                {/* Drift */}
-                <div style={{ padding:'10px 12px', background:drift.needsRebal?`${C.red}0a`:`${C.green}0a`, border:`1px solid ${drift.needsRebal?C.red+'33':C.green+'33'}`, borderRadius:9 }}>
-                  <div style={{ fontSize:'.6em', color:C.muted, marginBottom:4, letterSpacing:'.5px' }}>Drift</div>
-                  <div style={{ fontSize:'1.15em', fontWeight:700, color:drift.needsRebal?C.red:C.green, fontFamily:"'DM Mono',monospace" }}>{drift.driftPct}%</div>
-                  <div style={{ fontSize:'.62em', color:C.muted, marginTop:2 }}>{drift.needsRebal ? '⚠ Rebalanceo' : '✓ OK'}</div>
-                </div>
-                {/* Risk score */}
-                <div style={{ padding:'10px 12px', background:`${risk.color}0a`, border:`1px solid ${risk.color}33`, borderRadius:9 }}>
-                  <div style={{ fontSize:'.6em', color:C.muted, marginBottom:4, letterSpacing:'.5px' }}>Riesgo</div>
-                  <div style={{ fontSize:'1.15em', fontWeight:700, color:risk.color, fontFamily:"'DM Mono',monospace" }}>{risk.score}/100</div>
-                  <div style={{ fontSize:'.62em', color:C.muted, marginTop:2 }}>{risk.label}</div>
-                </div>
-                {/* Worst crash */}
-                {worst && (
-                  <div style={{ padding:'10px 12px', background:`${C.red}0a`, border:`1px solid ${C.red}22`, borderRadius:9 }}>
-                    <div style={{ fontSize:'.6em', color:C.muted, marginBottom:4, letterSpacing:'.5px' }}>Peor crisis</div>
-                    <div style={{ fontSize:'1.15em', fontWeight:700, color:C.red, fontFamily:"'DM Mono',monospace" }}>{worst.portfolioDropPct}%</div>
-                    <div style={{ fontSize:'.62em', color:C.muted, marginTop:2 }}>{worst.scenario.year}</div>
-                  </div>
-                )}
-              </div>
-              {drift.needsRebal && (
-                <div style={{ marginTop:10, padding:'8px 10px', background:`${C.red}08`, border:`1px solid ${C.red}22`, borderRadius:7, fontSize:'.68em', color:C.muted, lineHeight:1.5 }}>
-                  ⚠️ {drift.message}
-                </div>
-              )}
+            <Card style={{ padding:'14px 18px', background:C.surf3 }}>
+              <div style={{ fontSize:'.72em', color:C.muted, lineHeight:1.5 }}>⚠️ {drift.message}</div>
             </Card>
           );
         })()}
