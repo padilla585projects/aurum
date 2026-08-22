@@ -44,6 +44,72 @@ function injectContext(messages: ChatMessage[], prefix: string): ChatMessage[] {
   return arr;
 }
 
+/**
+ * Recorre un flujo de eventos y va entregando el texto segun llega.
+ *
+ * Existe para que la respuesta se pueda leer mientras se escribe, en vez de
+ * aparecer entera medio minuto despues. Devuelve el texto completo al terminar,
+ * asi que quien no quiera el goteo puede ignorar `alRecibir` y usarlo igual.
+ *
+ * `extraer` cambia por proveedor: cada uno mete el trozo de texto en un sitio
+ * distinto de su evento.
+ */
+export async function leerFlujo(
+  respuesta: Response,
+  extraer: (evento: unknown) => string,
+  alRecibir?: (texto: string) => void,
+): Promise<string> {
+  const lector = respuesta.body?.getReader();
+  if (!lector) return '';
+
+  const decodificador = new TextDecoder();
+  let pendiente = '';
+  let completo = '';
+
+  for (;;) {
+    const { done, value } = await lector.read();
+    if (done) break;
+
+    pendiente += decodificador.decode(value, { stream: true });
+
+    // Los eventos llegan separados por linea; el ultimo trozo puede venir
+    // partido, asi que se guarda para la vuelta siguiente.
+    const lineas = pendiente.split('\n');
+    pendiente = lineas.pop() ?? '';
+
+    for (const linea of lineas) {
+      const limpia = linea.trim();
+      if (!limpia.startsWith('data:')) continue;
+
+      const carga = limpia.slice(5).trim();
+      if (!carga || carga === '[DONE]') continue;
+
+      try {
+        const trozo = extraer(JSON.parse(carga));
+        if (trozo) {
+          completo += trozo;
+          alRecibir?.(trozo);
+        }
+      } catch {
+        // Un evento suelto ilegible no puede tirar la respuesta entera.
+      }
+    }
+  }
+  return completo;
+}
+
+/** Formato OpenAI: el texto viaja en `choices[0].delta.content`. */
+const trozoOpenAI = (e: unknown): string =>
+  (e as { choices?: { delta?: { content?: string } }[] })?.choices?.[0]?.delta?.content ?? '';
+
+/** Formato Anthropic: llega en los eventos `content_block_delta`. */
+const trozoAnthropic = (e: unknown): string => {
+  const evento = e as { type?: string; delta?: { type?: string; text?: string } };
+  return evento?.type === 'content_block_delta' && evento.delta?.type === 'text_delta'
+    ? evento.delta.text ?? ''
+    : '';
+};
+
 // ── Anthropic / Claude ──────────────────────────────────────────────────────
 // System prompt enviado como array con cache_control para máxima caché (90% descuento en hits).
 // contextPrefix: contexto dinámico (portfolio, usuario) inyectado en el primer mensaje user,
@@ -56,6 +122,7 @@ export async function callAnthropic(
   maxTokens   =  1024,
   useWebSearch = false,           // ← default FALSE (opt-in, no opt-out)
   contextPrefix?: string,         // contexto dinámico → primer mensaje user
+  alRecibir?:     (texto: string) => void,
 ): Promise<string> {
   const headers: Record<string, string> = {
     'Content-Type':   'application/json',
@@ -70,6 +137,27 @@ export async function callAnthropic(
   let cur = contextPrefix ? injectContext(messages, contextPrefix) : [...messages];
 
   let webSearchUsed = false;
+
+  // Con busqueda web hay un bucle de herramientas que puede reenviar la
+  // peticion varias veces; el goteo ahi mezclaria respuestas parciales de
+  // vueltas distintas. Sin busqueda es una sola llamada y se puede seguir en
+  // directo, que es el caso de la mayoria de las conversaciones.
+  if (alRecibir && !useWebSearch) {
+    const res = await fetch(urls.anthropic, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model,
+        max_tokens: maxTokens,
+        system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
+        messages: cur,
+        stream: true,
+      }),
+    });
+    if (!res.ok) throw new Error(`Claude ${res.status}: ${await res.text()}`);
+    const texto = (await leerFlujo(res, trozoAnthropic, alRecibir)).trim();
+    return texto || 'Sin respuesta.';
+  }
 
   for (let i = 0; i < 8; i++) {
     const body: Record<string, unknown> = {
@@ -134,6 +222,7 @@ export async function callOpenAI(
   maxTokens  =  1024,
   useWebSearch = false,
   contextPrefix?: string,
+  alRecibir?:   (texto: string) => void,
 ): Promise<string> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (isDev) headers['Authorization'] = `Bearer ${import.meta.env.VITE_OPENAI_API_KEY || ''}`;
@@ -147,9 +236,17 @@ export async function callOpenAI(
   if (useWebSearch && model.includes('search')) {
     body['web_search_options'] = { search_context_size: 'medium' };
   }
+  // Solo se pide el flujo si hay quien lo consuma: sin oyente no aporta nada y
+  // complica la lectura del resultado.
+  if (alRecibir) body.stream = true;
 
   const res = await fetch(urls.openai, { method: 'POST', headers, body: JSON.stringify(body) });
   if (!res.ok) throw new Error(`OpenAI ${res.status}: ${await res.text()}`);
+
+  if (alRecibir) {
+    const texto = (await leerFlujo(res, trozoOpenAI, alRecibir)).trim();
+    return texto || 'Sin respuesta.';
+  }
   const data = await res.json();
   // Tracking OpenAI usage
   if (data.usage) updateTokenBudget({
@@ -175,6 +272,7 @@ export async function callDeepSeek(
   model:     string,
   maxTokens = 2048,
   contextPrefix?: string,
+  alRecibir?:    (texto: string) => void,
 ): Promise<string> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (isDev) headers['Authorization'] = `Bearer ${import.meta.env.VITE_DEEPSEEK_API_KEY || ''}`;
@@ -242,6 +340,7 @@ export async function callByok(
   model:         string,
   maxTokens   =  1024,
   contextPrefix?: string,
+  alRecibir?:    (texto: string) => void,
 ): Promise<string> {
   const msgs = (contextPrefix ? injectContext(messages, contextPrefix) : messages)
     .map(m => ({ ...m, content: aFormatoOpenAI(m.content) }));
@@ -281,9 +380,10 @@ export async function callProvider(
   maxTokens?:     number,
   useWebSearch?:  boolean,
   contextPrefix?: string,
+  alRecibir?:     (texto: string) => void,
 ): Promise<string> {
   try {
-    return await despachar(route, messages, system, onSearch, maxTokens, useWebSearch, contextPrefix);
+    return await despachar(route, messages, system, onSearch, maxTokens, useWebSearch, contextPrefix, alRecibir);
   } catch (err) {
     // Ruta no disponible: se intenta el respaldo antes de dar la funcion por rota.
     if (err instanceof RutaNoDisponible && route.fallback) {
@@ -301,17 +401,18 @@ async function despachar(
   maxTokens?:     number,
   useWebSearch?:  boolean,
   contextPrefix?: string,
+  alRecibir?:     (texto: string) => void,
 ): Promise<string> {
   switch (route.provider) {
     case 'anthropic':
-      return callAnthropic(messages, system, route.model, onSearch, maxTokens, useWebSearch, contextPrefix);
+      return callAnthropic(messages, system, route.model, onSearch, maxTokens, useWebSearch, contextPrefix, alRecibir);
     case 'openai':
-      return callOpenAI(messages, system, route.model, maxTokens, useWebSearch, contextPrefix);
+      return callOpenAI(messages, system, route.model, maxTokens, useWebSearch, contextPrefix, alRecibir);
     case 'deepseek':
-      return callDeepSeek(messages, system, route.model, maxTokens, contextPrefix);
+      return callDeepSeek(messages, system, route.model, maxTokens, contextPrefix, alRecibir);
     case 'gemini':
     case 'grok':
     case 'openrouter':
-      return callByok(route.provider, messages, system, route.model, maxTokens, contextPrefix);
+      return callByok(route.provider, messages, system, route.model, maxTokens, contextPrefix, alRecibir);
   }
 }

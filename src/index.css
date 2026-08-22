@@ -15,3 +15,6 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
+
+/* Cursor de la respuesta que se esta escribiendo: dice que aun viene mas. */
+@keyframes blink { 0%, 100% { opacity: 1 } 50% { opacity: 0 } }

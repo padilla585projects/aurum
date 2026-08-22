@@ -82,6 +82,8 @@ export async function nexusChat(
   user?:     UserProfile,
   planes?:   PlanInversion[],
   efectivo?: number,
+  /** Se llama con cada trozo segun llega, para poder leerlo mientras se escribe. */
+  alRecibir?: (texto: string) => void,
 ): Promise<string> {
   const route = routeAgent(agentKey);
   if (onRoute) onRoute(route);
@@ -112,7 +114,7 @@ export async function nexusChat(
   }
 
   const trimmed = trimHistory(messages);
-  const text    = await callProvider(route, trimmed, staticSystem, onSearch, ctx.maxTokens, ctx.useWebSearch, ctxPrefix);
+  const text    = await callProvider(route, trimmed, staticSystem, onSearch, ctx.maxTokens, ctx.useWebSearch, ctxPrefix, alRecibir);
 
   // Async memory extraction every 5 interactions
   _memory.interactions++;

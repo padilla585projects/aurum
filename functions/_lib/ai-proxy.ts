@@ -346,11 +346,34 @@ export async function proxyToProvider(context: ProxyContext, provider: Provider)
     headers['X-Title'] = 'AURUM';
   }
 
+  // Si el cliente pide el flujo, la respuesta se reenvia segun llega, sin
+  // esperar a tenerla entera. Es lo que permite leerla mientras se escribe en
+  // vez de recibir un muro de texto de golpe medio minuto despues.
+  const enFlujo = validated.body.stream === true;
+
   let res: Response;
   try {
     res = await fetch(config.endpoint, { method: 'POST', headers, body: JSON.stringify(validated.body) });
   } catch (err) {
     return fail(502, 'provider_unreachable', `No se ha podido contactar con ${config.label}: ${String(err).slice(0, 120)}`);
+  }
+
+  if (enFlujo && res.ok && res.body) {
+    // Del consumo solo se registra que la llamada ocurrio: los totales vienen
+    // al final del flujo y leerlos aqui obligaria a interceptarlo entero, que
+    // es justo lo que se quiere evitar. Es un dato menos, no un dato falso.
+    context.waitUntil(recordUsage(env, user, provider, validated.model, res.status, null, 'stream'));
+
+    return new Response(res.body, {
+      status: res.status,
+      headers: {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-store',
+        // Sin esto algunos intermediarios acumulan el flujo y lo entregan de
+        // golpe, que deshace todo el proposito.
+        'X-Accel-Buffering': 'no',
+      },
+    });
   }
 
   let text = await res.text();

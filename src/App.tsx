@@ -418,6 +418,8 @@ function ChatTab({ profile, portfolio, userProfile }:{ profile:string; portfolio
   const [histLoaded, setHistLoaded] = useState(false);
   const [input, setInput]         = useState('');
   const [loading, setLoading]     = useState(false);
+  /** Lo que lleva escrito la respuesta en curso, para pintarlo segun llega. */
+  const [streaming, setStreaming] = useState('');
   const [searching, setSearching] = useState(false);
   const [activeRoute, setActiveRoute] = useState<RouteResult|null>(null);
   const [pendingAgent, setPendingAgent] = useState<AgentKey>('aurum');
@@ -531,7 +533,7 @@ function ChatTab({ profile, portfolio, userProfile }:{ profile:string; portfolio
     const userDisplayMsg: DisplayMessage = { role:'user', content:displayMsg };
     const withUser = [...history, userDisplayMsg];
     setHistory(withUser);
-    setLoading(true); setSearching(false); setActiveRoute(null);
+    setLoading(true); setSearching(false); setActiveRoute(null); setStreaming('');
 
     const apiHist: ChatMessage[] = withUser
       .filter((m,i) => !(i===0 && m.role==='assistant'))
@@ -541,6 +543,7 @@ function ChatTab({ profile, portfolio, userProfile }:{ profile:string; portfolio
 
     let routeResult: RouteResult|null = null;
     try {
+      let parcial = '';
       const reply = await nexusChat(
         agentKey, apiHist, profile, portfolio,
         () => setSearching(true),
@@ -550,6 +553,12 @@ function ChatTab({ profile, portfolio, userProfile }:{ profile:string; portfolio
         // 300 al mes cambia la respuesta.
         await sGet<PlanInversion[]>(CLAVE_PLANES) ?? [],
         await sGet<number>(CLAVE_EFECTIVO) ?? 0,
+        // Cada trozo que llega se pinta: la respuesta se lee mientras se
+        // escribe, en vez de aparecer entera medio minuto despues.
+        trozo => {
+          parcial += trozo;
+          setStreaming(parcial);
+        },
       );
       const assistantMsg: DisplayMessage = { role:'assistant', content:reply, provider:routeResult?.provider, model:routeResult?.model, agent:agentKey };
       const finalHist = [...withUser, assistantMsg];
@@ -617,7 +626,19 @@ function ChatTab({ profile, portfolio, userProfile }:{ profile:string; portfolio
             </div>
           );
         })}
-        {loading && (
+        {/* En cuanto llega la primera palabra se deja de esperar y se empieza a
+            leer: la respuesta se escribe delante en vez de aparecer entera al
+            final, que obligaba a subir el scroll para encontrar el principio. */}
+        {loading && streaming && (
+          <div className="msg-in" style={{ display:'flex', gap:8, marginBottom:14 }}>
+            <div style={{ width:24, height:24, borderRadius:7, background:`linear-gradient(135deg,${loadingAgent.color}70,${loadingAgent.color})`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:10, flexShrink:0 }}>{loadingAgent.icon}</div>
+            <div style={{ background:C.surf2, border:`1px solid ${C.border}`, borderRadius:'3px 14px 14px 14px', padding:'12px 16px', flex:1, minWidth:0 }}>
+              <Md text={streaming} />
+              <span style={{ display:'inline-block', width:7, height:14, background:loadingAgent.color, marginLeft:2, verticalAlign:'text-bottom', animation:'blink 1s steps(2) infinite' }} />
+            </div>
+          </div>
+        )}
+        {loading && !streaming && (
           <div className="msg-in" style={{ display:'flex', alignItems:'center', gap:8, marginBottom:14 }}>
             <div style={{ width:24, height:24, borderRadius:7, background:`linear-gradient(135deg,${loadingAgent.color}70,${loadingAgent.color})`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:10 }}>{loadingAgent.icon}</div>
             <div style={{ background:C.surf2, border:`1px solid ${C.border}`, borderRadius:'3px 14px 14px 14px', padding:'12px 16px', display:'flex', gap:10, alignItems:'center' }}>
