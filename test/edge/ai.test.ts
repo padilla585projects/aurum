@@ -273,3 +273,48 @@ describe('parámetros que solo valen para el modelo pedido', () => {
     expect(enviado.web_search_options).toEqual({ search_context_size: 'medium' });
   });
 });
+
+describe('nombres de parámetro que cambian según el modelo', () => {
+  it('reintenta con max_completion_tokens cuando el proveedor lo pide', async () => {
+    // Los modelos nuevos de OpenAI rechazan max_tokens. Cuál toca depende del
+    // modelo, y el modelo puede haberlo elegido «auto» un segundo antes.
+    const { token } = await seedLoggedIn();
+    await dispatch('/api/keys', { method: 'PUT', bearer: token,
+      body: { provider: 'openai', key: 'sk-propia-de-prueba', model: 'gpt-5-mini' } });
+
+    let intento = 0;
+    const espia = interceptarFetch(() => {
+      intento += 1;
+      return intento === 1
+        ? new Response(JSON.stringify({ error: { code: 'unsupported_parameter', param: 'max_tokens',
+            message: "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead." } }),
+            { status: 400, headers: { 'Content-Type': 'application/json' } })
+        : respuestaJson({ choices: [{ message: { content: 'ok' } }] });
+    });
+
+    const res = await dispatch('/api/openai', {
+      method: 'POST', bearer: token, body: { model: 'gpt-5-mini', messages: [], max_tokens: 500 },
+    });
+
+    expect(res.status).toBe(200);
+    expect(espia).toHaveBeenCalledTimes(2);
+    const segundo = JSON.parse((espia.mock.calls[1][1] as RequestInit).body as string);
+    expect(segundo.max_completion_tokens).toBe(500);
+    expect(segundo.max_tokens).toBeUndefined();
+  });
+
+  it('un 400 por otro motivo no se reintenta', async () => {
+    const { token } = await seedLoggedIn();
+    await dispatch('/api/keys', { method: 'PUT', bearer: token,
+      body: { provider: 'openai', key: 'sk-propia-de-prueba', model: 'gpt-5-mini' } });
+
+    const espia = interceptarFetch(() => new Response(
+      JSON.stringify({ error: { message: 'otra cosa cualquiera' } }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } }));
+
+    await dispatch('/api/openai', {
+      method: 'POST', bearer: token, body: { model: 'gpt-5-mini', messages: [], max_tokens: 500 },
+    });
+    expect(espia).toHaveBeenCalledTimes(1);
+  });
+});

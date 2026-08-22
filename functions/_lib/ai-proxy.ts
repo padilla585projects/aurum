@@ -353,7 +353,29 @@ export async function proxyToProvider(context: ProxyContext, provider: Provider)
     return fail(502, 'provider_unreachable', `No se ha podido contactar con ${config.label}: ${String(err).slice(0, 120)}`);
   }
 
-  const text = await res.text();
+  let text = await res.text();
+
+  // Los modelos nuevos de OpenAI rechazan `max_tokens` y quieren
+  // `max_completion_tokens`. Cual de los dos toca depende del modelo, y aqui el
+  // modelo puede haberlo elegido «auto» un segundo antes — mantener una lista
+  // de que familia quiere que nombre seria empezar a envejecer desde el primer
+  // dia. Se reintenta una vez con el nombre que el propio proveedor pide, que
+  // es informacion que ya viene en el error.
+  if (res.status === 400 && text.includes('max_completion_tokens') && 'max_tokens' in validated.body) {
+    const cuerpo = { ...validated.body } as Record<string, unknown>;
+    cuerpo.max_completion_tokens = cuerpo.max_tokens;
+    delete cuerpo.max_tokens;
+    try {
+      const reintento = await fetch(config.endpoint, { method: 'POST', headers, body: JSON.stringify(cuerpo) });
+      const textoReintento = await reintento.text();
+      if (reintento.ok) {
+        res = reintento;
+        text = textoReintento;
+      }
+    } catch {
+      // Se conserva la respuesta original, que ya explica el problema.
+    }
+  }
   let payload: unknown = null;
   try {
     payload = JSON.parse(text);
