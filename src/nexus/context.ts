@@ -20,11 +20,15 @@ export interface ContextSelection {
 const PORTFOLIO_RE = /cartera|posici[oó]n|portfolio|activo|acci[oó]n|compra|venta|ganancia|p[eé]rdida|diversif|concentra|rentabilidad|peso|rebalance/i;
 const PROFILE_RE   = /para m[ií]|mi situaci[oó]n|deber[ií]a|recomend|personaliz|capital|horizonte|edad|ingresos|broker|fiscal|impuesto|tribut/i;
 
+// Estos topes se eligieron con respuestas cortas en mente y cortan las largas
+// a mitad de frase, que es como se ha estado quedando una consulta de analisis.
+// Cortar por la mitad no ahorra: la respuesta ya se ha pagado entera y encima
+// hay que repetir la pregunta.
 const MAX_TOKENS: Record<QueryIntent, number> = {
-  simple:        512,
-  live:         1024,
-  analytical:   1536,
-  comprehensive: 2048,
+  simple:        1024,
+  live:          2048,
+  analytical:    3072,
+  comprehensive: 4096,
 };
 
 function classifyIntent(q: string, agentKey: AgentKey): QueryIntent {
